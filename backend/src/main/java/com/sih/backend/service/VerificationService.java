@@ -12,15 +12,19 @@ import com.sih.backend.model.Title;
 import com.sih.backend.repository.SubmissionRepository;
 import com.sih.backend.repository.TitleRepository;
 import com.sih.backend.util.TransliterationHelper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Service
 public class VerificationService {
+
+    private static final Logger log = LoggerFactory.getLogger(VerificationService.class);
 
     @Autowired
     private RuleEngine ruleEngine;
@@ -43,124 +47,219 @@ public class VerificationService {
     @Autowired
     private ObjectMapper objectMapper;
 
+    // ─── Retrieval Limits (how many raw candidates to fetch from DB per mechanism) ───
+    @Value("${candidate.fuzzy.retrieval.limit:100}")
+    private int fuzzyRetrievalLimit;
+
+    @Value("${candidate.phonetic.retrieval.limit:100}")
+    private int phoneticRetrievalLimit;
+
+    @Value("${candidate.embedding.retrieval.limit:20}")
+    private int embeddingRetrievalLimit;
+
+    // ─── Response Filter Thresholds (a candidate must pass at least ONE to appear in response) ───
+    @Value("${candidate.fuzzy.threshold:50.0}")
+    private double fuzzyThreshold;
+
+    @Value("${candidate.phonetic.threshold:75.0}")
+    private double phoneticThreshold;
+
+    @Value("${candidate.embedding.threshold:70.0}")
+    private double embeddingThreshold;
+
     /**
-     * Executes the verification pipeline for a new title submission.
+     * Executes the full verification pipeline for a new title submission.
+     *
+     * Pipeline:
+     *  1. Normalize / transliterate
+     *  2. Rule engine (hard reject on violations)
+     *  3. Candidate retrieval from DB (fuzzy FULLTEXT + phonetic index)
+     *  4. Deduplicate by titleId
+     *  5. Calculate fuzzy + phonetic scores independently for every candidate
+     *  6. Send top-N candidates to AI for embedded/semantic scoring
+     *  7. Apply response filter thresholds — include if ANY score >= its threshold
+     *  8. Sort by max(score) descending, return ALL qualifying candidates
      */
     public VerificationResponse verify(VerificationRequest request) {
         String rawTitle = request.getTitle();
         String language = request.getLanguage();
         String applicantId = request.getApplicantId();
 
-        // 1. Normalize title (Devanagari -> Latin transliteration + normalization)
+        // 1. Normalize (Devanagari → Latin transliteration + lowercase + strip punctuation)
         String normalized = TransliterationHelper.normalize(rawTitle);
+        log.info("Verifying title: '{}' → normalized: '{}'", rawTitle, normalized);
 
-        // 2. Run rule engine (Blocklists, combinations, periodicity)
+        // 2. Hard rule checks (blocklist words, affixes, periodicity, combinations)
         List<String> ruleViolations = ruleEngine.check(normalized);
-
         String submissionId = UUID.randomUUID().toString();
         List<String> reasons = new ArrayList<>();
-        List<MatchedTitleDto> matchedTitles = new ArrayList<>();
         boolean aiCallInvoked = false;
-        double topSimilarity = 0.0;
 
         if (!ruleViolations.isEmpty()) {
-            // Rule violations: Reject immediately, skipping candidate search and AI calls
             reasons.addAll(ruleViolations);
             return saveAndReturnResponse(
                     submissionId, rawTitle, language, applicantId,
                     "REJECTED", 0.0, 0.0,
-                    reasons, matchedTitles, ruleViolations, false
+                    reasons, Collections.emptyList(), ruleViolations, false
             );
         }
 
-        // 3. Candidate Generation (MySQL FULLTEXT ngram search + phonetic index lookup)
+        // 3. Candidate Retrieval — limited for DB performance, NOT for final response
         String phoneticKey = phoneticService.computePhoneticKey(normalized);
-        List<Title> fuzzyMatches = titleRepository.findFuzzyMatches(normalized);
-        List<Title> phoneticMatches = titleRepository.findByPhoneticKey(phoneticKey);
 
-        Set<Long> phoneticIds = phoneticMatches.stream().map(Title::getId).collect(Collectors.toSet());
-        Set<Long> fuzzyIds = fuzzyMatches.stream().map(Title::getId).collect(Collectors.toSet());
+        List<Title> fuzzyCandidates = titleRepository.findFuzzyMatches(normalized)
+                .stream().limit(fuzzyRetrievalLimit).toList();
 
-        // Merge candidates (unique by ID)
-        List<Title> candidates = Stream.concat(fuzzyMatches.stream(), phoneticMatches.stream())
-                .collect(Collectors.toMap(Title::getId, t -> t, (a, b) -> a))
-                .values()
-                .stream()
+        List<Title> phoneticCandidates = titleRepository.findByPhoneticKey(phoneticKey)
+                .stream().limit(phoneticRetrievalLimit).toList();
+
+        Set<Long> fuzzyIds = fuzzyCandidates.stream().map(Title::getId).collect(Collectors.toSet());
+        Set<Long> phoneticIds = phoneticCandidates.stream().map(Title::getId).collect(Collectors.toSet());
+
+        log.info("Candidate retrieval: fuzzy={}, phonetic={}", fuzzyCandidates.size(), phoneticCandidates.size());
+
+        // 4. Deduplicate by titleId into a single candidate pool (LinkedHashMap preserves insertion order)
+        Map<Long, Title> candidatePoolMap = new LinkedHashMap<>();
+        for (Title t : fuzzyCandidates) {
+            candidatePoolMap.put(t.getId(), t);
+        }
+        for (Title t : phoneticCandidates) {
+            candidatePoolMap.putIfAbsent(t.getId(), t);
+        }
+
+        log.info("Deduplicated candidate pool size: {}", candidatePoolMap.size());
+
+        // 5. Calculate fuzzy and phonetic scores INDEPENDENTLY for every candidate in the pool
+        //    Scores are always calculated — threshold filtering happens later (step 7)
+        List<MatchedTitleDto> scoredCandidates = new ArrayList<>();
+        for (Title candidate : candidatePoolMap.values()) {
+
+            // Fuzzy score (Jaro-Winkler + Levenshtein average)
+            double fuzzySim = similarityScorer.calculateSimilarity(normalized, candidate.getNormalizedText());
+
+            // Phonetic score — exact key match = 100.0, otherwise key-to-key similarity
+            String candidatePhoneticKey = candidate.getPhoneticKey();
+            if (candidatePhoneticKey == null || candidatePhoneticKey.isBlank()) {
+                candidatePhoneticKey = phoneticService.computePhoneticKey(candidate.getNormalizedText());
+            }
+            double phoneticSim;
+            if (phoneticIds.contains(candidate.getId())) {
+                // Exact phonetic key match from DB index — score 100.0
+                phoneticSim = 100.0;
+            } else {
+                phoneticSim = similarityScorer.calculateSimilarity(phoneticKey, candidatePhoneticKey);
+            }
+
+            List<String> matchTypes = new ArrayList<>();
+            // Track match origin (used later for matchTypes label), but do NOT filter here
+            if (fuzzyIds.contains(candidate.getId())) matchTypes.add("FUZZY");
+            if (phoneticIds.contains(candidate.getId())) matchTypes.add("PHONETIC");
+
+            scoredCandidates.add(new MatchedTitleDto(
+                    candidate.getRawText(),
+                    fuzzySim,          // always set — threshold filtering is in step 7
+                    phoneticSim,       // always set
+                    null,              // embeddedScore populated in step 6
+                    matchTypes
+            ));
+        }
+
+        // 6. AI / Embedding scoring — limited to top-N candidates for cost/latency control
+        //    Select top candidates by their current max(fuzzy, phonetic) score for AI evaluation
+        List<MatchedTitleDto> candidatesForAi = scoredCandidates.stream()
+                .sorted(Comparator.comparingDouble(
+                        (MatchedTitleDto dto) -> Math.max(dto.getFuzzyScore(), dto.getPhoneticScore())
+                ).reversed())
+                .limit(embeddingRetrievalLimit)
                 .toList();
 
-        Title topCandidate = null;
-
-        // 4. Precise string similarity scoring (Jaro-Winkler + Levenshtein)
-        for (Title candidate : candidates) {
-            double similarity = similarityScorer.calculateSimilarity(normalized, candidate.getNormalizedText());
-            
-            String matchType = "FUZZY";
-            if (phoneticIds.contains(candidate.getId()) && fuzzyIds.contains(candidate.getId())) {
-                matchType = "FUZZY_AND_PHONETIC";
-            } else if (phoneticIds.contains(candidate.getId())) {
-                matchType = "PHONETIC";
-            }
-
-            MatchedTitleDto matchedDto = new MatchedTitleDto(candidate.getRawText(), similarity, matchType);
-            matchedTitles.add(matchedDto);
-
-            if (similarity > topSimilarity) {
-                topSimilarity = similarity;
-                topCandidate = candidate;
-            }
-        }
-
-        // Sort matched titles by similarity score descending
-        matchedTitles.sort(Comparator.comparingDouble(MatchedTitleDto::getSimilarity).reversed());
-
-        // 5. Semantic similarity via external AI service (only if there is a likely candidate)
-        if (topCandidate != null && topSimilarity > 40.0) {
+        for (MatchedTitleDto dto : candidatesForAi) {
             try {
-                // Call AI microservice
-                double semanticSimilarity = aiClient.getSemanticSimilarity(normalized, topCandidate.getNormalizedText(), language);
+                double semanticSimilarity = aiClient.getSemanticSimilarity(
+                        normalized, TransliterationHelper.normalize(dto.getTitle()), language);
                 aiCallInvoked = true;
 
-                // Scale 0.0-1.0 AI similarity score to percentage
-                double semanticScorePercent = semanticSimilarity * 100.0;
-                if (semanticScorePercent > topSimilarity) {
-                    topSimilarity = semanticScorePercent;
-                    // Prepend the semantic match to the front of matched list
-                    matchedTitles.add(0, new MatchedTitleDto(topCandidate.getRawText(), semanticScorePercent, "SEMANTIC"));
+                double semanticPercent = semanticSimilarity * 100.0;
+                dto.setEmbeddedScore(semanticPercent);
+                if (semanticPercent >= embeddingThreshold && !dto.getMatchTypes().contains("EMBEDDED")) {
+                    dto.getMatchTypes().add("EMBEDDED");
                 }
             } catch (Exception e) {
-                // Fault-tolerant fallback handled by CircuitBreaker
+                // Circuit breaker fallback — embeddedScore remains null for this candidate
+                log.debug("AI call failed for '{}': {}", dto.getTitle(), e.getMessage());
             }
         }
 
-        // 6. Aggregate scores
-        double verificationProbability = 100.0 - topSimilarity;
-        verificationProbability = Math.max(0.0, Math.min(100.0, verificationProbability));
+        // 7. Apply response filter thresholds:
+        //    Include a candidate if it qualifies on AT LEAST ONE scoring dimension
+        List<MatchedTitleDto> qualifyingCandidates = scoredCandidates.stream()
+                .filter(dto -> {
+                    boolean qualifyFuzzy    = dto.getFuzzyScore() != null    && dto.getFuzzyScore()    >= fuzzyThreshold;
+                    boolean qualifyPhonetic = dto.getPhoneticScore() != null && dto.getPhoneticScore() >= phoneticThreshold;
+                    boolean qualifyEmbedded = dto.getEmbeddedScore() != null && dto.getEmbeddedScore() >= embeddingThreshold;
+                    return qualifyFuzzy || qualifyPhonetic || qualifyEmbedded;
+                })
+                // Nullify scores that were below threshold so response is clean
+                .peek(dto -> {
+                    if (dto.getFuzzyScore() != null && dto.getFuzzyScore() < fuzzyThreshold) {
+                        dto.setFuzzyScore(null);
+                        dto.getMatchTypes().remove("FUZZY");
+                    }
+                    if (dto.getPhoneticScore() != null && dto.getPhoneticScore() < phoneticThreshold) {
+                        dto.setPhoneticScore(null);
+                        dto.getMatchTypes().remove("PHONETIC");
+                    }
+                    if (dto.getEmbeddedScore() != null && dto.getEmbeddedScore() < embeddingThreshold) {
+                        dto.setEmbeddedScore(null);
+                        dto.getMatchTypes().remove("EMBEDDED");
+                    }
+                })
+                .collect(Collectors.toList());
 
-        // Define verdict threshold (e.g. similarity >= 50% leads to rejection)
-        String verdict = "APPROVED";
+        log.info("Qualifying candidates after threshold filter: {}", qualifyingCandidates.size());
+
+        // 8. Sort ALL qualifying candidates by max(fuzzyScore, phoneticScore, embeddedScore) descending
+        qualifyingCandidates.sort(Comparator.comparingDouble(MatchedTitleDto::getSimilarity).reversed());
+
+        // 9. Determine top similarity and verdict
+        double topSimilarity = qualifyingCandidates.isEmpty() ? 0.0 :
+                qualifyingCandidates.get(0).getSimilarity();
+
+        double verificationProbability = Math.max(0.0, Math.min(100.0, 100.0 - topSimilarity));
+
+        String verdict;
         if (verificationProbability < 50.0) {
             verdict = "REJECTED";
-            if (topCandidate != null) {
-                reasons.add(String.format("Phonetically or structurally similar to existing title '%s' (%.1f%% match)", 
-                        topCandidate.getRawText(), topSimilarity));
+            if (!qualifyingCandidates.isEmpty()) {
+                MatchedTitleDto top = qualifyingCandidates.get(0);
+                if (qualifyingCandidates.size() == 1) {
+                    reasons.add(String.format(
+                            "Similar to existing title '%s' (%.1f%% match)",
+                            top.getTitle(), topSimilarity));
+                } else {
+                    reasons.add(String.format(
+                            "Multiple registered titles show significant similarity. Top match: '%s' (%.1f%%)",
+                            top.getTitle(), topSimilarity));
+                }
             }
         } else {
+            verdict = "APPROVED";
             reasons.add("No significant similarity conflicts found with existing titles.");
         }
 
         return saveAndReturnResponse(
                 submissionId, rawTitle, language, applicantId,
                 verdict, verificationProbability, topSimilarity,
-                reasons, matchedTitles, ruleViolations, aiCallInvoked
+                reasons, qualifyingCandidates, ruleViolations, aiCallInvoked
         );
     }
 
     /**
-     * Fetches a historical submission result.
+     * Fetches a historical submission result by submission ID.
      */
     public VerificationResponse getSubmission(String submissionId) {
         Submission sub = submissionRepository.findById(submissionId)
-                .orElseThrow(() -> new NoSuchElementException("Submission not found with ID: " + submissionId));
+                .orElseThrow(() -> new NoSuchElementException("Submission not found: " + submissionId));
         return mapToResponse(sub);
     }
 
