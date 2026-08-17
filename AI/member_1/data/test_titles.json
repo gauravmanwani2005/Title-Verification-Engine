@@ -1,0 +1,84 @@
+{
+  "new_title": {
+    "application_id": "APP001",
+    "title": "Daily Evening",
+    "language": "English"
+  },
+  "candidates": [
+    {
+      "registration_id": "REG001",
+      "title": "Pratidin Sandhya",
+      "language": "Hindi"
+    },
+    {
+      "registration_id": "REG002",
+      "title": "Daily News",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG003",
+      "title": "Mumbai Samachar",
+      "language": "Hindi"
+    },
+    {
+      "registration_id": "REG004",
+      "title": "Indian Express",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG005",
+      "title": "India Today",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG006",
+      "title": "Namascar News",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG007",
+      "title": "Namaskar News",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG008",
+      "title": "Pratidin Samachar",
+      "language": "Hindi"
+    },
+    {
+      "registration_id": "REG009",
+      "title": "Sandhya Samachar",
+      "language": "Hindi"
+    },
+    {
+      "registration_id": "REG010",
+      "title": "Maharashtra Times",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG011",
+      "title": "Maharashtra Today",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG012",
+      "title": "The Hindu",
+      "language": "English"
+    },
+    {
+      "registration_id": "REG013",
+      "title": "Hindu Samachar",
+      "language": "Hindi"
+    },
+    {
+      "registration_id": "REG014",
+      "title": "Navbharat Times",
+      "language": "Hindi"
+    },
+    {
+      "registration_id": "REG015",
+      "title": "New Bharat Times",
+      "language": "English"
+    }
+  ]
+}

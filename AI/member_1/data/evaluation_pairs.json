@@ -1,0 +1,19 @@
+{
+  "same_meaning": [
+    ["Daily Evening", "Pratidin Sandhya"],
+    ["Daily", "Pratidin"],
+    ["Evening", "Sandhya"],
+    ["News", "Samachar"],
+    ["India", "Bharat"]
+  ],
+  "spelling_variation": [
+    ["Namaskar", "Namascar"],
+    ["Samachar", "Samachaar"],
+    ["Hindustan", "Hindustaan"]
+  ],
+  "different_meaning": [
+    ["Daily News", "Maharashtra Times"],
+    ["Indian Express", "Mumbai Samachar"],
+    ["India Today", "The Hindu"]
+  ]
+}
