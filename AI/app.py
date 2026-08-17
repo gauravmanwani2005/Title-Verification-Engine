@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import os
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -8,12 +9,15 @@ from member_1.embeddings.embedding_service import EmbeddingService
 from member_1.embeddings.model import MODEL_NAME
 from member_1.vector_search.vector_retriever import VectorRetriever
 
+# Load .env file (GEMINI_API_KEY lives here)
+load_dotenv()
 
 VECTOR_DIMENSIONS = int(os.getenv("AI_EMBEDDING_DIMENSION", "768"))
 SIMILARITY_METRIC = os.getenv("AI_SIMILARITY_METRIC", "cosine")
 
 embedding_service = EmbeddingService()
 vector_retriever = None
+gemini_engine = None
 
 
 class SemanticSimilarityRequest(BaseModel):
@@ -28,13 +32,31 @@ class VectorSearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=500)
 
 
+class GeminiAnalyzeRequest(BaseModel):
+    application_id: str | None = None
+    title: str
+    language: str | None = "en"
+    candidates: list
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vector_retriever
+    global vector_retriever, gemini_engine
+
+    # Load Member 1 vector index
     try:
         vector_retriever = VectorRetriever()
     except Exception:
         vector_retriever = None
+
+    # Load Member 2 Gemini engine (only if API key is set)
+    try:
+        from member2.semantics.gemini_semantic import GeminiSemanticEngine
+        gemini_engine = GeminiSemanticEngine()
+    except Exception as e:
+        print(f"[gemini] Not loaded: {e}")
+        gemini_engine = None
+
     yield
 
 
@@ -46,6 +68,7 @@ def health():
     return {
         "status": "ok",
         "vector_index_loaded": vector_retriever is not None,
+        "gemini_loaded": gemini_engine is not None,
         "model": MODEL_NAME,
         "dimensions": VECTOR_DIMENSIONS,
         "metric": SIMILARITY_METRIC,
@@ -71,9 +94,8 @@ def vector_search(request: VectorSearchRequest):
     if vector_retriever is None:
         raise HTTPException(
             status_code=503,
-            detail="Vector index is not available. Build the index before calling vector search.",
+            detail="Vector index is not available.",
         )
-
     candidates = vector_retriever.retrieve(
         request.title,
         top_k=request.limit,
@@ -84,3 +106,27 @@ def vector_search(request: VectorSearchRequest):
         "metric": SIMILARITY_METRIC,
         "candidates": candidates,
     }
+
+
+@app.post("/api/gemini/analyze")
+def gemini_analyze(request: GeminiAnalyzeRequest):
+    """
+    Member 2 — Gemini semantic analysis.
+    Takes a title + list of candidates (with embedding_similarity from Member 1)
+    and returns a semantic_score + reason for each candidate.
+    """
+    if gemini_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini engine not available. Check GEMINI_API_KEY environment variable.",
+        )
+
+    payload = {
+        "application_id": request.application_id,
+        "title": request.title,
+        "language": request.language,
+        "candidates": request.candidates,
+    }
+
+    result = gemini_engine.analyze_candidates(payload)
+    return result
