@@ -15,3 +15,5 @@ AI/member_1/data/ranked_candidates.json
 
 # IDE
 .vscode/
+
+.env
