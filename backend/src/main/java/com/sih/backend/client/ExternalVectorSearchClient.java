@@ -29,49 +29,31 @@ public class ExternalVectorSearchClient implements VectorSearchClient {
     @Override
     public List<VectorCandidate> findNearestCandidates(String normalizedTitle, String language, int limit) {
         try {
-            List<VectorSearchCandidateDto> remoteCandidates = aiClient.getVectorCandidates(normalizedTitle, language, limit);
-            if (remoteCandidates == null || remoteCandidates.isEmpty()) {
+            List<String> remoteTitles = aiClient.getVectorCandidates(normalizedTitle, language, limit);
+            if (remoteTitles == null || remoteTitles.isEmpty()) {
                 return Collections.emptyList();
             }
 
-            List<String> rawTitles = remoteCandidates.stream()
-                    .map(VectorSearchCandidateDto::getTitle)
+            List<String> normalizedTitles = remoteTitles.stream()
                     .filter(Objects::nonNull)
-                    .toList();
-            List<String> normalizedTitles = rawTitles.stream()
-                    .map(String::trim)
-                    .map(String::toLowerCase)
+                    .map(t -> t.trim().toLowerCase())
                     .toList();
 
-            List<Title> matched = titleRepository.findByNormalizedTextInOrRawTextIn(normalizedTitles, rawTitles);
+            List<Title> matched = titleRepository.findByNormalizedTextInOrRawTextIn(normalizedTitles, remoteTitles);
             Map<String, Title> byNormalized = new HashMap<>();
             Map<String, Title> byRaw = new HashMap<>();
             for (Title t : matched) {
-                if (t.getNormalizedText() != null) {
-                    byNormalized.put(t.getNormalizedText(), t);
-                }
-                if (t.getRawText() != null) {
-                    byRaw.put(t.getRawText(), t);
-                }
+                if (t.getNormalizedText() != null) byNormalized.put(t.getNormalizedText(), t);
+                if (t.getRawText() != null) byRaw.put(t.getRawText(), t);
             }
 
             List<VectorCandidate> results = new ArrayList<>();
             int rank = 1;
-            for (VectorSearchCandidateDto remoteCandidate : remoteCandidates) {
-                String title = remoteCandidate.getTitle();
-                if (title == null) {
-                    continue;
-                }
-
-                Title mappedTitle = byNormalized.getOrDefault(title.trim().toLowerCase(), byRaw.get(title));
-                double scorePercent = remoteCandidate.getVectorSimilarity() * 100.0;
-                if (mappedTitle != null && scorePercent >= embeddingSimilarityThreshold) {
-                    results.add(new VectorCandidate(
-                            mappedTitle.getId(),
-                            mappedTitle.getRawText(),
-                            rank++,
-                            scorePercent
-                    ));
+            for (String titleStr : remoteTitles) {
+                if (titleStr == null) continue;
+                Title mappedTitle = byNormalized.getOrDefault(titleStr.trim().toLowerCase(), byRaw.get(titleStr));
+                if (mappedTitle != null) {
+                    results.add(new VectorCandidate(mappedTitle.getId(), mappedTitle.getRawText(), rank++, 80.0));
                 }
                 if (results.size() >= limit) break;
             }
