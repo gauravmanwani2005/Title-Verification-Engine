@@ -3,8 +3,9 @@ package com.sih.backend.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sih.backend.client.AiClient;
+import com.sih.backend.client.VectorSearchClient;
 import com.sih.backend.dto.MatchedTitleDto;
+import com.sih.backend.dto.VectorCandidate;
 import com.sih.backend.dto.VerificationRequest;
 import com.sih.backend.dto.VerificationResponse;
 import com.sih.backend.model.Submission;
@@ -12,15 +13,26 @@ import com.sih.backend.model.Title;
 import com.sih.backend.repository.SubmissionRepository;
 import com.sih.backend.repository.TitleRepository;
 import com.sih.backend.util.TransliterationHelper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.UUID;
 
 @Service
 public class VerificationService {
+
+    private static final Logger log = LoggerFactory.getLogger(VerificationService.class);
 
     @Autowired
     private RuleEngine ruleEngine;
@@ -38,10 +50,19 @@ public class VerificationService {
     private SimilarityScorer similarityScorer;
 
     @Autowired
-    private AiClient aiClient;
+    private VectorSearchClient vectorSearchClient;
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Value("${candidate.fuzzy.retrieval.limit:100}")
+    private int fuzzyRetrievalLimit;
+
+    @Value("${candidate.phonetic.retrieval.limit:100}")
+    private int phoneticRetrievalLimit;
+
+    @Value("${candidate.embedding.retrieval.limit:100}")
+    private int embeddingRetrievalLimit;
 
     /**
      * Executes the verification pipeline for a new title submission.
@@ -51,20 +72,15 @@ public class VerificationService {
         String language = request.getLanguage();
         String applicantId = request.getApplicantId();
 
-        // 1. Normalize title (Devanagari -> Latin transliteration + normalization)
         String normalized = TransliterationHelper.normalize(rawTitle);
-
-        // 2. Run rule engine (Blocklists, combinations, periodicity)
         List<String> ruleViolations = ruleEngine.check(normalized);
 
         String submissionId = UUID.randomUUID().toString();
         List<String> reasons = new ArrayList<>();
         List<MatchedTitleDto> matchedTitles = new ArrayList<>();
         boolean aiCallInvoked = false;
-        double topSimilarity = 0.0;
 
         if (!ruleViolations.isEmpty()) {
-            // Rule violations: Reject immediately, skipping candidate search and AI calls
             reasons.addAll(ruleViolations);
             return saveAndReturnResponse(
                     submissionId, rawTitle, language, applicantId,
@@ -73,84 +89,56 @@ public class VerificationService {
             );
         }
 
-        // 3. Candidate Generation (MySQL FULLTEXT ngram search + phonetic index lookup)
         String phoneticKey = phoneticService.computePhoneticKey(normalized);
-        List<Title> fuzzyMatches = titleRepository.findFuzzyMatches(normalized);
-        List<Title> phoneticMatches = titleRepository.findByPhoneticKey(phoneticKey);
+        List<Title> fuzzyMatches = titleRepository.findFuzzyMatches(normalized, fuzzyRetrievalLimit);
+        List<Title> phoneticMatches = titleRepository
+                .findByPhoneticKey(phoneticKey, PageRequest.of(0, phoneticRetrievalLimit))
+                .getContent();
 
-        Set<Long> phoneticIds = phoneticMatches.stream().map(Title::getId).collect(Collectors.toSet());
-        Set<Long> fuzzyIds = fuzzyMatches.stream().map(Title::getId).collect(Collectors.toSet());
+        List<VectorCandidate> embeddedMatches;
+        try {
+            aiCallInvoked = true;
+            embeddedMatches = vectorSearchClient.findNearestCandidates(normalized, language, embeddingRetrievalLimit);
+        } catch (Exception e) {
+            log.warn("AI/vector retrieval unavailable. Continuing with fuzzy + phonetic candidates. {}", e.getMessage());
+            embeddedMatches = Collections.emptyList();
+        }
 
-        // Merge candidates (unique by ID)
-        List<Title> candidates = Stream.concat(fuzzyMatches.stream(), phoneticMatches.stream())
-                .collect(Collectors.toMap(Title::getId, t -> t, (a, b) -> a))
-                .values()
-                .stream()
+        Map<Long, MatchedTitleDto> candidatePool = new LinkedHashMap<>();
+        for (Title fuzzyMatch : fuzzyMatches) {
+            MatchedTitleDto dto = candidatePool.computeIfAbsent(
+                    fuzzyMatch.getId(),
+                    ignored -> new MatchedTitleDto(fuzzyMatch.getId(), fuzzyMatch.getRawText())
+            );
+            dto.setFuzzyScore(similarityScorer.calculateSimilarity(normalized, fuzzyMatch.getNormalizedText()));
+            dto.addMatchType("FUZZY");
+        }
+
+        for (Title phoneticMatch : phoneticMatches) {
+            MatchedTitleDto dto = candidatePool.computeIfAbsent(
+                    phoneticMatch.getId(),
+                    ignored -> new MatchedTitleDto(phoneticMatch.getId(), phoneticMatch.getRawText())
+            );
+            dto.setPhoneticScore(calculatePhoneticScore(normalized, phoneticMatch.getNormalizedText()));
+            dto.addMatchType("PHONETIC");
+        }
+
+        for (VectorCandidate embeddedMatch : embeddedMatches) {
+            MatchedTitleDto dto = candidatePool.computeIfAbsent(
+                    embeddedMatch.getTitleId(),
+                    ignored -> new MatchedTitleDto(embeddedMatch.getTitleId(), embeddedMatch.getTitle())
+            );
+            dto.setEmbeddedScore(embeddedMatch.getSimilarity());
+            dto.addMatchType("EMBEDDED");
+        }
+
+        matchedTitles = candidatePool.values().stream()
+                .sorted(Comparator.comparingDouble(MatchedTitleDto::getSimilarity).reversed())
                 .toList();
-
-        Title topCandidate = null;
-
-        // 4. Precise string similarity scoring (Jaro-Winkler + Levenshtein)
-        for (Title candidate : candidates) {
-            double similarity = similarityScorer.calculateSimilarity(normalized, candidate.getNormalizedText());
-            
-            String matchType = "FUZZY";
-            if (phoneticIds.contains(candidate.getId()) && fuzzyIds.contains(candidate.getId())) {
-                matchType = "FUZZY_AND_PHONETIC";
-            } else if (phoneticIds.contains(candidate.getId())) {
-                matchType = "PHONETIC";
-            }
-
-            MatchedTitleDto matchedDto = new MatchedTitleDto(candidate.getRawText(), similarity, matchType);
-            matchedTitles.add(matchedDto);
-
-            if (similarity > topSimilarity) {
-                topSimilarity = similarity;
-                topCandidate = candidate;
-            }
-        }
-
-        // Sort matched titles by similarity score descending
-        matchedTitles.sort(Comparator.comparingDouble(MatchedTitleDto::getSimilarity).reversed());
-
-        // 5. Semantic similarity via external AI service (only if there is a likely candidate)
-        if (topCandidate != null && topSimilarity > 40.0) {
-            try {
-                // Call AI microservice
-                double semanticSimilarity = aiClient.getSemanticSimilarity(normalized, topCandidate.getNormalizedText(), language);
-                aiCallInvoked = true;
-
-                // Scale 0.0-1.0 AI similarity score to percentage
-                double semanticScorePercent = semanticSimilarity * 100.0;
-                if (semanticScorePercent > topSimilarity) {
-                    topSimilarity = semanticScorePercent;
-                    // Prepend the semantic match to the front of matched list
-                    matchedTitles.add(0, new MatchedTitleDto(topCandidate.getRawText(), semanticScorePercent, "SEMANTIC"));
-                }
-            } catch (Exception e) {
-                // Fault-tolerant fallback handled by CircuitBreaker
-            }
-        }
-
-        // 6. Aggregate scores
-        double verificationProbability = 100.0 - topSimilarity;
-        verificationProbability = Math.max(0.0, Math.min(100.0, verificationProbability));
-
-        // Define verdict threshold (e.g. similarity >= 50% leads to rejection)
-        String verdict = "APPROVED";
-        if (verificationProbability < 50.0) {
-            verdict = "REJECTED";
-            if (topCandidate != null) {
-                reasons.add(String.format("Phonetically or structurally similar to existing title '%s' (%.1f%% match)", 
-                        topCandidate.getRawText(), topSimilarity));
-            }
-        } else {
-            reasons.add("No significant similarity conflicts found with existing titles.");
-        }
 
         return saveAndReturnResponse(
                 submissionId, rawTitle, language, applicantId,
-                verdict, verificationProbability, topSimilarity,
+                "", 0.0, 0.0,
                 reasons, matchedTitles, ruleViolations, aiCallInvoked
         );
     }
@@ -218,5 +206,14 @@ public class VerificationService {
                 sub.getSimilarityScore(), reasons, matchedTitles, ruleViolations,
                 sub.isAiCallInvoked()
         );
+    }
+
+    private double calculatePhoneticScore(String normalizedInput, String candidateNormalizedText) {
+        String inputKey = phoneticService.computePhoneticKey(normalizedInput);
+        String candidateKey = phoneticService.computePhoneticKey(candidateNormalizedText);
+        if (!inputKey.isBlank() && inputKey.equals(candidateKey)) {
+            return 100.0;
+        }
+        return similarityScorer.calculateSimilarity(inputKey, candidateKey);
     }
 }

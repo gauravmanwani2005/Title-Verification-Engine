@@ -1,0 +1,6 @@
+faiss-cpu==1.15.0
+numpy==2.5.2
+sentence-transformers==5.7.0
+scikit-learn==1.7.2
+fastapi==0.118.0
+uvicorn==0.37.0
