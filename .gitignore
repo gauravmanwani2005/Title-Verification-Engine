@@ -2,8 +2,16 @@
 __pycache__/
 *.py[cod]
 
-# Virtual environment
-ai/.venv/
+# Virtual environments
+.venv/
+venv/
+env/
+
+# FAISS generated indexes
+AI/member_1/vector_search/index/
+
+# Generated evaluation output
+AI/member_1/data/ranked_candidates.json
 
 # IDE
 .vscode/
