@@ -232,6 +232,53 @@ public class VerificationService {
             }
         }
 
+        // 6b. Gemini semantic scoring (Member 2) — runs on same top-N candidates
+        //     Blends Gemini score with LaBSE embeddedScore: max(labse, gemini*100)
+        try {
+            List<Map<String, Object>> geminiInput = candidatesForAi.stream()
+                    .map(dto -> {
+                        Map<String, Object> c = new HashMap<>();
+                        c.put("registration_id", dto.getTitle());
+                        c.put("title", dto.getTitle());
+                        c.put("language", language);
+                        c.put("embedding_similarity",
+                                dto.getEmbeddedScore() != null ? dto.getEmbeddedScore() / 100.0 : 0.0);
+                        return c;
+                    })
+                    .toList();
+
+            List<Map<String, Object>> geminiResults =
+                    aiClient.getGeminiSemanticScores(normalized, language, geminiInput);
+            aiCallInvoked = true;
+
+            // Build a map from title → gemini semantic_score for quick lookup
+            Map<String, Double> geminiScoreMap = new HashMap<>();
+            for (Map<String, Object> result : geminiResults) {
+                String regId = (String) result.get("registration_id");
+                Number score = (Number) result.get("semantic_score");
+                if (regId != null && score != null) {
+                    geminiScoreMap.put(regId, score.doubleValue() * 100.0);
+                }
+            }
+
+            // Blend: use max(labse_embedded, gemini) as the final embeddedScore
+            for (MatchedTitleDto dto : candidatesForAi) {
+                Double geminiScore = geminiScoreMap.get(dto.getTitle());
+                if (geminiScore != null) {
+                    double current = dto.getEmbeddedScore() != null ? dto.getEmbeddedScore() : 0.0;
+                    double blended = Math.max(current, geminiScore);
+                    dto.setEmbeddedScore(blended);
+                    if (blended >= embeddingThreshold && !dto.getMatchTypes().contains("GEMINI")) {
+                        dto.getMatchTypes().add("GEMINI");
+                    }
+                    log.debug("Gemini score for '{}': {:.1f}% → blended: {:.1f}%",
+                            dto.getTitle(), geminiScore, blended);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Gemini scoring skipped (not blocking): {}", e.getMessage());
+        }
+
         // 7. Apply response filter thresholds:
         //    Include a candidate if it qualifies on AT LEAST ONE scoring dimension
         List<MatchedTitleDto> qualifyingCandidates = scoredCandidates.stream()

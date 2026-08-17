@@ -17,11 +17,14 @@ public class AiClient {
 
     private final RestClient restClient;
 
-    @Value("${ai.service.url:http://localhost:5000/api/semantic/similarity}")
+    @Value("${ai.service.url:http://localhost:8000/api/semantic/similarity}")
     private String aiServiceUrl;
 
-    @Value("${ai.vector.url:http://localhost:5000/api/vector/search}")
+    @Value("${ai.vector.url:http://localhost:8000/api/vector/search}")
     private String aiVectorUrl;
+
+    @Value("${ai.gemini.url:http://localhost:8000/api/gemini/analyze}")
+    private String aiGeminiUrl;
 
     public AiClient() {
         this.restClient = RestClient.builder().build();
@@ -134,6 +137,50 @@ public class AiClient {
 
     public java.util.List<String> fallbackVectorSearch(String query, String language, int limit, Throwable t) {
         log.warn("AI Vector search fallback triggered due to exception: {}", t.getMessage());
+        return java.util.Collections.emptyList();
+    }
+
+    /**
+     * Calls the Gemini semantic analysis endpoint (Member 2).
+     * Sends the new title + scored candidates to Gemini for explainable semantic scoring.
+     * Guarded by circuit breaker — falls back to empty list if unavailable.
+     */
+    @CircuitBreaker(name = "aiService", fallbackMethod = "fallbackGeminiAnalyze")
+    public java.util.List<Map<String, Object>> getGeminiSemanticScores(
+            String title, String language,
+            java.util.List<Map<String, Object>> candidates) {
+
+        log.info("Calling Gemini semantic analysis for '{}' with {} candidates", title, candidates.size());
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("title", title);
+        body.put("language", language);
+        body.put("candidates", candidates);
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = restClient.post()
+                    .uri(aiGeminiUrl)
+                    .body(body)
+                    .retrieve()
+                    .body(Map.class);
+
+            if (response != null && response.containsKey("candidate_results")) {
+                @SuppressWarnings("unchecked")
+                java.util.List<Map<String, Object>> results =
+                        (java.util.List<Map<String, Object>>) response.get("candidate_results");
+                return results != null ? results : java.util.Collections.emptyList();
+            }
+            return java.util.Collections.emptyList();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to call Gemini service: " + e.getMessage(), e);
+        }
+    }
+
+    public java.util.List<Map<String, Object>> fallbackGeminiAnalyze(
+            String title, String language,
+            java.util.List<Map<String, Object>> candidates, Throwable t) {
+        log.warn("Gemini service fallback triggered: {}", t.getMessage());
         return java.util.Collections.emptyList();
     }
 }
