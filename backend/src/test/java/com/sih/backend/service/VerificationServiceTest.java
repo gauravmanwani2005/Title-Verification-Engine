@@ -52,11 +52,12 @@ class VerificationServiceTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         ReflectionTestUtils.setField(verificationService, "objectMapper", objectMapper);
-        ReflectionTestUtils.setField(verificationService, "fuzzyLimit", 20);
-        ReflectionTestUtils.setField(verificationService, "phoneticLimit", 20);
-        ReflectionTestUtils.setField(verificationService, "embeddingLimit", 5);
-        ReflectionTestUtils.setField(verificationService, "similarityThreshold", 40.0);
+        ReflectionTestUtils.setField(verificationService, "fuzzyRetrievalLimit", 20);
+        ReflectionTestUtils.setField(verificationService, "phoneticRetrievalLimit", 20);
+        ReflectionTestUtils.setField(verificationService, "embeddingRetrievalLimit", 5);
+        ReflectionTestUtils.setField(verificationService, "fuzzyThreshold", 40.0);
         ReflectionTestUtils.setField(verificationService, "phoneticThreshold", 75.0);
+        ReflectionTestUtils.setField(verificationService, "embeddingThreshold", 70.0);
     }
 
     private VerificationRequest createRequest(String title) {
@@ -147,7 +148,7 @@ class VerificationServiceTest {
         assertEquals(1, res.getMatchedTitles().size());
         
         MatchedTitleDto candidate = res.getMatchedTitles().get(0);
-        assertNull(candidate.getFuzzyScore()); // fuzzy below threshold and not in fuzzyMatches list
+        assertEquals(35.0, candidate.getFuzzyScore()); // fuzzy below threshold is kept
         assertEquals(100.0, candidate.getPhoneticScore());
     }
 
@@ -168,7 +169,7 @@ class VerificationServiceTest {
         when(similarityScorer.calculateSimilarity("MRNKBLTN", "TLNS")).thenReturn(10.0); // phonetic below threshold
         
         // Mock AI client returns 0.90 (90%)
-        when(aiClient.getSemanticSimilarity("morning bulletin", "daily news", "en")).thenReturn(0.90);
+        when(aiClient.getSemanticSimilarity(eq("morning bulletin"), eq("daily news"), eq("en"), any(), any())).thenReturn(0.90);
 
         VerificationResponse res = verificationService.verify(req);
 
@@ -178,7 +179,7 @@ class VerificationServiceTest {
 
         MatchedTitleDto candidate = res.getMatchedTitles().get(0);
         assertEquals(45.0, candidate.getFuzzyScore());
-        assertNull(candidate.getPhoneticScore());
+        assertEquals(10.0, candidate.getPhoneticScore());
         assertEquals(90.0, candidate.getEmbeddedScore());
         assertTrue(candidate.getMatchTypes().contains("EMBEDDED"));
     }
@@ -200,14 +201,14 @@ class VerificationServiceTest {
         when(similarityScorer.calculateSimilarity("RNTMTTL", "RNTMTTLD")).thenReturn(60.0); // below phonetic threshold (75)
 
         // Mock AI client to fail, keeping embeddedScore null
-        when(aiClient.getSemanticSimilarity("random title", "randum tytle", "en")).thenThrow(new RuntimeException("AI service unavailable"));
+        when(aiClient.getSemanticSimilarity(eq("random title"), eq("randum tytle"), eq("en"), any(), any())).thenThrow(new RuntimeException("AI service unavailable"));
 
         VerificationResponse res = verificationService.verify(req);
 
         assertEquals(1, res.getMatchedTitles().size());
         MatchedTitleDto candidate = res.getMatchedTitles().get(0);
         assertEquals(85.0, candidate.getFuzzyScore());
-        assertNull(candidate.getPhoneticScore());
+        assertEquals(60.0, candidate.getPhoneticScore());
         assertNull(candidate.getEmbeddedScore());
     }
 
@@ -231,7 +232,7 @@ class VerificationServiceTest {
 
         assertEquals(1, res.getMatchedTitles().size());
         MatchedTitleDto candidate = res.getMatchedTitles().get(0);
-        assertNull(candidate.getFuzzyScore());
+        assertEquals(30.0, candidate.getFuzzyScore());
         assertEquals(100.0, candidate.getPhoneticScore());
     }
 
@@ -252,14 +253,14 @@ class VerificationServiceTest {
         when(similarityScorer.calculateSimilarity("semantic input", "semantic target")).thenReturn(45.0);
         when(similarityScorer.calculateSimilarity("SMNTKNPT", "SMNTKTRKT")).thenReturn(50.0); // below phonetic threshold
 
-        when(aiClient.getSemanticSimilarity("semantic input", "semantic target", "en")).thenReturn(0.85);
+        when(aiClient.getSemanticSimilarity(eq("semantic input"), eq("semantic target"), eq("en"), any(), any())).thenReturn(0.85);
 
         VerificationResponse res = verificationService.verify(req);
 
         assertEquals(1, res.getMatchedTitles().size());
         MatchedTitleDto candidate = res.getMatchedTitles().get(0);
         assertEquals(45.0, candidate.getFuzzyScore());
-        assertNull(candidate.getPhoneticScore());
+        assertEquals(50.0, candidate.getPhoneticScore());
         assertEquals(85.0, candidate.getEmbeddedScore());
     }
 
@@ -278,7 +279,7 @@ class VerificationServiceTest {
 
         when(similarityScorer.calculateSimilarity("namaskar samachar", "namaskar samachar")).thenReturn(100.0);
         when(similarityScorer.calculateSimilarity("NMSKSMCR", "NMSKSMCR")).thenReturn(100.0);
-        when(aiClient.getSemanticSimilarity("namaskar samachar", "namaskar samachar", "en")).thenReturn(1.0);
+        when(aiClient.getSemanticSimilarity(eq("namaskar samachar"), eq("namaskar samachar"), eq("en"), any(), any())).thenReturn(1.0);
 
         VerificationResponse res = verificationService.verify(req);
 
@@ -309,7 +310,7 @@ class VerificationServiceTest {
         when(similarityScorer.calculateSimilarity("NMSKSMCR", "NMSKSMCR")).thenReturn(100.0);
         
         // AI fails/returns 0.0 or throws exception -> results in null or fallback
-        when(aiClient.getSemanticSimilarity("namaskar samachar", "namaskar samachar", "en")).thenThrow(new RuntimeException("AI Down"));
+        when(aiClient.getSemanticSimilarity(eq("namaskar samachar"), eq("namaskar samachar"), eq("en"), any(), any())).thenThrow(new RuntimeException("AI Down"));
 
         VerificationResponse res = verificationService.verify(req);
 
@@ -399,7 +400,7 @@ class VerificationServiceTest {
         when(similarityScorer.calculateSimilarity("NMSKR", "NMSKR")).thenReturn(100.0);
 
         // Mocking client throwing exception simulating CircuitBreaker trigger or connection error
-        when(aiClient.getSemanticSimilarity("namaskar", "namaskar", "en")).thenThrow(new RuntimeException("Circuit open"));
+        when(aiClient.getSemanticSimilarity(eq("namaskar"), eq("namaskar"), eq("en"), any(), any())).thenThrow(new RuntimeException("Circuit open"));
 
         VerificationResponse res = verificationService.verify(req);
 
@@ -423,7 +424,7 @@ class VerificationServiceTest {
 
         when(similarityScorer.calculateSimilarity("namaskar", "namaskar")).thenReturn(90.0);
         when(similarityScorer.calculateSimilarity("NMSKR", "NMSKR")).thenReturn(100.0);
-        when(aiClient.getSemanticSimilarity("namaskar", "namaskar", "en")).thenReturn(0.85);
+        when(aiClient.getSemanticSimilarity(eq("namaskar"), eq("namaskar"), eq("en"), any(), any())).thenReturn(0.85);
 
         VerificationResponse res = verificationService.verify(req);
 

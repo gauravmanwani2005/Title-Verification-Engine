@@ -113,10 +113,41 @@ public class VerificationService {
         List<Title> phoneticCandidates = titleRepository.findByPhoneticKey(phoneticKey)
                 .stream().limit(phoneticRetrievalLimit).toList();
 
+        List<Title> vectorCandidates;
+        try {
+            List<String> vectorTitles = aiClient.getVectorCandidates(normalized, language, embeddingRetrievalLimit);
+            if (vectorTitles != null && !vectorTitles.isEmpty()) {
+                vectorCandidates = titleRepository.findAll().stream()
+                        .filter(t -> vectorTitles.contains(t.getRawText()) || vectorTitles.contains(t.getNormalizedText()))
+                        .toList();
+            } else {
+                throw new RuntimeException("No vector titles returned or service fallback triggered empty list");
+            }
+        } catch (Exception e) {
+            log.warn("Vector search failed, falling back to local Cosine Similarity candidate retrieval: {}", e.getMessage());
+            org.apache.commons.text.similarity.CosineSimilarity cosine = new org.apache.commons.text.similarity.CosineSimilarity();
+            Map<CharSequence, Integer> queryFreqs = getTermFrequencies(normalized);
+            
+            vectorCandidates = titleRepository.findAll().stream()
+                    .map(t -> {
+                        double sim = 0.0;
+                        try {
+                            sim = cosine.cosineSimilarity(queryFreqs, getTermFrequencies(t.getNormalizedText()));
+                        } catch (Exception ignored) {}
+                        return new AbstractMap.SimpleEntry<>(t, sim);
+                    })
+                    .filter(entry -> entry.getValue() >= 0.5)
+                    .sorted((e1, e2) -> Double.compare(e2.getValue(), e1.getValue()))
+                    .limit(embeddingRetrievalLimit)
+                    .map(Map.Entry::getKey)
+                    .toList();
+        }
+
         Set<Long> fuzzyIds = fuzzyCandidates.stream().map(Title::getId).collect(Collectors.toSet());
         Set<Long> phoneticIds = phoneticCandidates.stream().map(Title::getId).collect(Collectors.toSet());
+        Set<Long> vectorIds = vectorCandidates.stream().map(Title::getId).collect(Collectors.toSet());
 
-        log.info("Candidate retrieval: fuzzy={}, phonetic={}", fuzzyCandidates.size(), phoneticCandidates.size());
+        log.info("Candidate retrieval: fuzzy={}, phonetic={}, vector={}", fuzzyCandidates.size(), phoneticCandidates.size(), vectorCandidates.size());
 
         // 4. Deduplicate by titleId into a single candidate pool (LinkedHashMap preserves insertion order)
         Map<Long, Title> candidatePoolMap = new LinkedHashMap<>();
@@ -124,6 +155,9 @@ public class VerificationService {
             candidatePoolMap.put(t.getId(), t);
         }
         for (Title t : phoneticCandidates) {
+            candidatePoolMap.putIfAbsent(t.getId(), t);
+        }
+        for (Title t : vectorCandidates) {
             candidatePoolMap.putIfAbsent(t.getId(), t);
         }
 
@@ -154,6 +188,7 @@ public class VerificationService {
             // Track match origin (used later for matchTypes label), but do NOT filter here
             if (fuzzyIds.contains(candidate.getId())) matchTypes.add("FUZZY");
             if (phoneticIds.contains(candidate.getId())) matchTypes.add("PHONETIC");
+            if (vectorIds.contains(candidate.getId())) matchTypes.add("EMBEDDED");
 
             scoredCandidates.add(new MatchedTitleDto(
                     candidate.getRawText(),
@@ -168,7 +203,13 @@ public class VerificationService {
         //    Select top candidates by their current max(fuzzy, phonetic) score for AI evaluation
         List<MatchedTitleDto> candidatesForAi = scoredCandidates.stream()
                 .sorted(Comparator.comparingDouble(
-                        (MatchedTitleDto dto) -> Math.max(dto.getFuzzyScore(), dto.getPhoneticScore())
+                        (MatchedTitleDto dto) -> {
+                            double max = Math.max(dto.getFuzzyScore(), dto.getPhoneticScore());
+                            if (dto.getMatchTypes().contains("EMBEDDED")) {
+                                return Math.max(max, 100.0);
+                            }
+                            return max;
+                        }
                 ).reversed())
                 .limit(embeddingRetrievalLimit)
                 .toList();
@@ -176,7 +217,8 @@ public class VerificationService {
         for (MatchedTitleDto dto : candidatesForAi) {
             try {
                 double semanticSimilarity = aiClient.getSemanticSimilarity(
-                        normalized, TransliterationHelper.normalize(dto.getTitle()), language);
+                        normalized, TransliterationHelper.normalize(dto.getTitle()), language,
+                        dto.getFuzzyScore(), dto.getPhoneticScore());
                 aiCallInvoked = true;
 
                 double semanticPercent = semanticSimilarity * 100.0;
@@ -199,19 +241,17 @@ public class VerificationService {
                     boolean qualifyEmbedded = dto.getEmbeddedScore() != null && dto.getEmbeddedScore() >= embeddingThreshold;
                     return qualifyFuzzy || qualifyPhonetic || qualifyEmbedded;
                 })
-                // Nullify scores that were below threshold so response is clean
+                // Populate matchTypes based on thresholds, keeping all calculated scores
                 .peek(dto -> {
-                    if (dto.getFuzzyScore() != null && dto.getFuzzyScore() < fuzzyThreshold) {
-                        dto.setFuzzyScore(null);
-                        dto.getMatchTypes().remove("FUZZY");
+                    dto.getMatchTypes().clear();
+                    if (dto.getFuzzyScore() != null && dto.getFuzzyScore() >= fuzzyThreshold) {
+                        dto.getMatchTypes().add("FUZZY");
                     }
-                    if (dto.getPhoneticScore() != null && dto.getPhoneticScore() < phoneticThreshold) {
-                        dto.setPhoneticScore(null);
-                        dto.getMatchTypes().remove("PHONETIC");
+                    if (dto.getPhoneticScore() != null && dto.getPhoneticScore() >= phoneticThreshold) {
+                        dto.getMatchTypes().add("PHONETIC");
                     }
-                    if (dto.getEmbeddedScore() != null && dto.getEmbeddedScore() < embeddingThreshold) {
-                        dto.setEmbeddedScore(null);
-                        dto.getMatchTypes().remove("EMBEDDED");
+                    if (dto.getEmbeddedScore() != null && dto.getEmbeddedScore() >= embeddingThreshold) {
+                        dto.getMatchTypes().add("EMBEDDED");
                     }
                 })
                 .collect(Collectors.toList());
@@ -317,5 +357,24 @@ public class VerificationService {
                 sub.getSimilarityScore(), reasons, matchedTitles, ruleViolations,
                 sub.isAiCallInvoked()
         );
+    }
+
+    private Map<CharSequence, Integer> getTermFrequencies(String text) {
+        Map<CharSequence, Integer> frequencies = new HashMap<>();
+        if (text == null || text.isBlank()) {
+            return frequencies;
+        }
+        String normalized = text.trim().toLowerCase().replaceAll("\\s+", "");
+        for (int i = 0; i <= normalized.length() - 3; i++) {
+            String trigram = normalized.substring(i, i + 3);
+            frequencies.put(trigram, frequencies.getOrDefault(trigram, 0) + 1);
+        }
+        if (frequencies.isEmpty()) {
+            for (int i = 0; i < normalized.length(); i++) {
+                String ch = String.valueOf(normalized.charAt(i));
+                frequencies.put(ch, frequencies.getOrDefault(ch, 0) + 1);
+            }
+        }
+        return frequencies;
     }
 }
