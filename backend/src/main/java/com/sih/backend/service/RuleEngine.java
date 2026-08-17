@@ -77,7 +77,12 @@ public class RuleEngine {
             }
         }
 
-        // 3. Combination-title check
+        // 3. Exact duplicate check
+        if (titleRepository.existsByNormalizedText(normalized)) {
+            violations.add("Exact duplicate of an existing title: '" + normalized + "'");
+        }
+
+        // 4. Combination-title check
         if (tokens.length > 1) {
             for (int i = 1; i < tokens.length; i++) {
                 String left = String.join(" ", Arrays.copyOfRange(tokens, 0, i));
@@ -89,7 +94,7 @@ public class RuleEngine {
             }
         }
 
-        // 4. Periodicity check
+        // 5. Periodicity check
         String stripped = stripPeriodicity(normalized);
         if (!stripped.equals(normalized) && !stripped.isBlank()) {
             if (titleRepository.existsByNormalizedText(stripped)) {

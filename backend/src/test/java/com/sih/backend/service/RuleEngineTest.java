@@ -67,4 +67,13 @@ class RuleEngineTest {
         List<String> violations = ruleEngine.check("hindustan times");
         assertTrue(violations.stream().anyMatch(v -> v.contains("Combines existing titles: 'hindustan' + 'times'")));
     }
+
+    @Test
+    void testExactDuplicateCheck() {
+        when(titleRepository.existsByNormalizedText("mumbai mirror")).thenReturn(true);
+
+        List<String> violations = ruleEngine.check("mumbai mirror");
+
+        assertTrue(violations.stream().anyMatch(v -> v.contains("Exact duplicate of an existing title")));
+    }
 }

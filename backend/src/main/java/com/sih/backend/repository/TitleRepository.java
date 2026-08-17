@@ -17,15 +17,19 @@ public interface TitleRepository extends JpaRepository<Title, Long> {
 
     List<Title> findByPhoneticKey(String phoneticKey);
 
+    Page<Title> findByPhoneticKey(String phoneticKey, Pageable pageable);
+
     Page<Title> findByPhoneticKeyIsNull(Pageable pageable);
+
+    List<Title> findByNormalizedTextInOrRawTextIn(List<String> normalizedTexts, List<String> rawTexts);
 
     @Query(value = """
         SELECT t.* FROM title t
         WHERE MATCH(t.normalized_text) AGAINST (:input IN NATURAL LANGUAGE MODE)
         ORDER BY MATCH(t.normalized_text) AGAINST (:input IN NATURAL LANGUAGE MODE) DESC
-        LIMIT 100
+        LIMIT :limit
         """, nativeQuery = true)
-    List<Title> findFuzzyMatches(@Param("input") String input);
+    List<Title> findFuzzyMatches(@Param("input") String input, @Param("limit") int limit);
 
     @Query("SELECT t FROM Title t WHERE t.rawText LIKE %:query% OR t.normalizedText LIKE %:query%")
     Page<Title> searchTitles(@Param("query") String query, Pageable pageable);
