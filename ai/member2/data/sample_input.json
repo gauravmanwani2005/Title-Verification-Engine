@@ -1,0 +1,43 @@
+{
+  "application_id": "APP004",
+  "title": "Mumbai Business Daily",
+  "language": "English",
+  "candidates": [
+    {
+      "registration_id": "REG301",
+      "title": "Mumbai Vyapar Dainik",
+      "language": "Marathi",
+      "embedding_similarity": 0.81
+    },
+    {
+      "registration_id": "REG302",
+      "title": "Mumbai Sports Daily",
+      "language": "English",
+      "embedding_similarity": 0.76
+    },
+    {
+      "registration_id": "REG303",
+      "title": "Mumbai Business News",
+      "language": "English",
+      "embedding_similarity": 0.88
+    },
+    {
+      "registration_id": "REG304",
+      "title": "Delhi Business Daily",
+      "language": "English",
+      "embedding_similarity": 0.79
+    },
+    {
+      "registration_id": "REG305",
+      "title": "Cricket Samachar",
+      "language": "Hindi",
+      "embedding_similarity": 0.42
+    },
+    {
+      "registration_id": "REG306",
+      "title": "Mumbai Arthik Varta",
+      "language": "Marathi",
+      "embedding_similarity": 0.73
+    }
+  ]
+}
