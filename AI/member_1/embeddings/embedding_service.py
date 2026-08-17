@@ -48,7 +48,7 @@ class EmbeddingService:
             embedding2
         )
 
-    def rank_candidates(self, new_title_data, candidates, top_k=5):
+    def rank_candidates(self, new_title_data, candidates, top_k=20):
         """
         Calculate embedding similarity between the new title
         and every candidate in the supplied candidate pool.

@@ -29,7 +29,7 @@ class SemanticSimilarityRequest(BaseModel):
 class VectorSearchRequest(BaseModel):
     title: str
     language: str | None = None
-    limit: int = Field(default=10, ge=1, le=500)
+    limit: int = Field(default=50, ge=1, le=500)
 
 
 class GeminiAnalyzeRequest(BaseModel):

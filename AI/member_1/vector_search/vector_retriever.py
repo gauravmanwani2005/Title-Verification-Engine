@@ -74,7 +74,7 @@ class VectorRetriever:
     def retrieve(
         self,
         title,
-        top_k=10
+        top_k=50
     ):
         """
         Retrieve the nearest existing titles.
