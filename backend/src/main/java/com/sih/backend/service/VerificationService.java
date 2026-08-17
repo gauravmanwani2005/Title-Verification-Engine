@@ -55,8 +55,11 @@ public class VerificationService {
     @Value("${candidate.phonetic.retrieval.limit:100}")
     private int phoneticRetrievalLimit;
 
-    @Value("${candidate.embedding.retrieval.limit:20}")
+    @Value("${candidate.embedding.retrieval.limit:50}")
     private int embeddingRetrievalLimit;
+
+    @Value("${candidate.ai.scoring.limit:20}")
+    private int aiScoringLimit;
 
     // ─── Response Filter Thresholds (a candidate must pass at least ONE to appear in response) ───
     @Value("${candidate.fuzzy.threshold:50.0}")
@@ -127,7 +130,7 @@ public class VerificationService {
             log.warn("Vector search failed, falling back to local Cosine Similarity candidate retrieval: {}", e.getMessage());
             org.apache.commons.text.similarity.CosineSimilarity cosine = new org.apache.commons.text.similarity.CosineSimilarity();
             Map<CharSequence, Integer> queryFreqs = getTermFrequencies(normalized);
-            
+
             vectorCandidates = titleRepository.findAll().stream()
                     .map(t -> {
                         double sim = 0.0;
@@ -200,37 +203,56 @@ public class VerificationService {
         }
 
         // 6. AI / Embedding scoring — limited to top-N candidates for cost/latency control
-        //    Select top candidates by their current max(fuzzy, phonetic) score for AI evaluation
+        //    Rank the COMPLETE candidate pool using the strongest non-AI score first.
         List<MatchedTitleDto> candidatesForAi = scoredCandidates.stream()
-                .sorted(Comparator.comparingDouble(
-                        (MatchedTitleDto dto) -> {
-                            double max = Math.max(dto.getFuzzyScore(), dto.getPhoneticScore());
-                            if (dto.getMatchTypes().contains("EMBEDDED")) {
-                                return Math.max(max, 100.0);
-                            }
-                            return max;
-                        }
-                ).reversed())
-                .limit(embeddingRetrievalLimit)
+                .sorted(
+                        Comparator.comparingDouble(
+                                (MatchedTitleDto dto) -> {
+                                    double fuzzy = dto.getFuzzyScore() != null
+                                            ? dto.getFuzzyScore()
+                                            : 0.0;
+
+                                    double phonetic = dto.getPhoneticScore() != null
+                                            ? dto.getPhoneticScore()
+                                            : 0.0;
+
+                                    return Math.max(fuzzy, phonetic);
+                                }
+                        ).reversed()
+                )
+                .limit(aiScoringLimit)
                 .toList();
 
         for (MatchedTitleDto dto : candidatesForAi) {
             try {
                 double semanticSimilarity = aiClient.getSemanticSimilarity(
-                        normalized, TransliterationHelper.normalize(dto.getTitle()), language,
-                        dto.getFuzzyScore(), dto.getPhoneticScore());
+                        normalized,
+                        TransliterationHelper.normalize(dto.getTitle()),
+                        language,
+                        dto.getFuzzyScore(),
+                        dto.getPhoneticScore()
+                );
+
                 aiCallInvoked = true;
 
                 double semanticPercent = semanticSimilarity * 100.0;
+
                 dto.setEmbeddedScore(semanticPercent);
-                if (semanticPercent >= embeddingThreshold && !dto.getMatchTypes().contains("EMBEDDED")) {
+
+                if (semanticPercent >= embeddingThreshold
+                        && !dto.getMatchTypes().contains("EMBEDDED")) {
                     dto.getMatchTypes().add("EMBEDDED");
                 }
+
             } catch (Exception e) {
-                // Circuit breaker fallback — embeddedScore remains null for this candidate
-                log.debug("AI call failed for '{}': {}", dto.getTitle(), e.getMessage());
+                log.debug(
+                        "AI call failed for '{}': {}",
+                        dto.getTitle(),
+                        e.getMessage()
+                );
             }
         }
+
 
         // 6b. Gemini semantic scoring (Member 2) — runs on same top-N candidates
         //     Blends Gemini score with LaBSE embeddedScore: max(labse, gemini*100)
