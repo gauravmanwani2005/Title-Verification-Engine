@@ -18,10 +18,17 @@ INSERT INTO blocklist_affix (affix, type) VALUES
 ('media', 'SUFFIX'),
 ('digital', 'SUFFIX');
 
--- Insert sample existing titles (phonetic_key is NULL to test backfill migration)
+-- Insert sample existing titles — includes several "Samachar" variants to exercise multi-match responses
 INSERT INTO title (raw_text, normalized_text, phonetic_key, status) VALUES 
 ('Namaskaar Samachar', 'namaskaar samachar', NULL, 'APPROVED'),
+('Bharat Samachar', 'bharat samachar', NULL, 'APPROVED'),
+('Jan Samachar', 'jan samachar', NULL, 'APPROVED'),
+('Desh Samachar', 'desh samachar', NULL, 'APPROVED'),
+('Mumbai Samachar', 'mumbai samachar', NULL, 'APPROVED'),
+('Rashtriya Samachar', 'rashtriya samachar', NULL, 'APPROVED'),
+('Dainik Samachar', 'dainik samachar', NULL, 'APPROVED'),
 ('Hindustan Times', 'hindustan times', NULL, 'APPROVED'),
 ('Dainik Bhaskar', 'dainik bhaskar', NULL, 'APPROVED'),
 ('The Indian Express', 'the indian express', NULL, 'APPROVED'),
 ('Mumbai Mirror', 'mumbai mirror', NULL, 'APPROVED');
+

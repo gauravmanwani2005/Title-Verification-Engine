@@ -1,41 +1,61 @@
 package com.sih.backend.dto;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 
-@JsonIgnoreProperties(ignoreUnknown = true)
 public class MatchedTitleDto {
-    private Long titleId;
     private String title;
-    private double fuzzyScore;
-    private double phoneticScore;
-    private double embeddedScore;
-    private List<String> matchTypes = new ArrayList<>();
-
-    @JsonIgnore
-    private Double legacySimilarity;
-
-    @JsonIgnore
-    private String legacyMatchType;
+    private Double similarity;
+    private String matchType; // PHONETIC or FUZZY or SEMANTIC/EMBEDDED
+    private Double fuzzyScore;
+    private Double phoneticScore;
+    private Double embeddedScore;
+    private List<String> matchTypes;
 
     public MatchedTitleDto() {}
 
-    public MatchedTitleDto(Long titleId, String title) {
-        this.titleId = titleId;
+    public MatchedTitleDto(String title, Double fuzzyScore, Double phoneticScore, Double embeddedScore, List<String> matchTypes) {
         this.title = title;
+        this.fuzzyScore = fuzzyScore;
+        this.phoneticScore = phoneticScore;
+        this.embeddedScore = embeddedScore;
+        this.matchTypes = matchTypes != null ? matchTypes : new ArrayList<>();
+        
+        // Derive similarity for backward compatibility
+        double max = 0.0;
+        if (fuzzyScore != null) max = Math.max(max, fuzzyScore);
+        if (phoneticScore != null) max = Math.max(max, phoneticScore);
+        if (embeddedScore != null) max = Math.max(max, embeddedScore);
+        this.similarity = max;
+
+        // Derive matchType for backward compatibility
+        if (this.matchTypes.isEmpty()) {
+            this.matchType = "NONE";
+        } else {
+            this.matchType = String.join("_AND_", this.matchTypes);
+        }
     }
 
-    public Long getTitleId() {
-        return titleId;
-    }
-
-    public void setTitleId(Long titleId) {
-        this.titleId = titleId;
+    // Constructor for backward compatibility deserialization
+    public MatchedTitleDto(String title, double similarity, String matchType) {
+        this.title = title;
+        this.similarity = similarity;
+        this.matchType = matchType;
+        this.matchTypes = new ArrayList<>();
+        if (matchType != null) {
+            if (matchType.contains("FUZZY")) {
+                this.fuzzyScore = similarity;
+                this.matchTypes.add("FUZZY");
+            }
+            if (matchType.contains("PHONETIC")) {
+                this.phoneticScore = similarity;
+                this.matchTypes.add("PHONETIC");
+            }
+            if (matchType.contains("SEMANTIC") || matchType.contains("EMBEDDED")) {
+                this.embeddedScore = similarity;
+                this.matchTypes.add("EMBEDDED");
+            }
+        }
     }
 
     public String getTitle() {
@@ -46,27 +66,54 @@ public class MatchedTitleDto {
         this.title = title;
     }
 
-    public double getFuzzyScore() {
+    public Double getSimilarity() {
+        double max = 0.0;
+        boolean hasAny = false;
+        if (fuzzyScore != null) { max = Math.max(max, fuzzyScore); hasAny = true; }
+        if (phoneticScore != null) { max = Math.max(max, phoneticScore); hasAny = true; }
+        if (embeddedScore != null) { max = Math.max(max, embeddedScore); hasAny = true; }
+        if (hasAny) {
+            return max;
+        }
+        return similarity != null ? similarity : 0.0;
+    }
+
+    public void setSimilarity(Double similarity) {
+        this.similarity = similarity;
+    }
+
+    public String getMatchType() {
+        if (matchTypes != null && !matchTypes.isEmpty()) {
+            return String.join("_AND_", matchTypes);
+        }
+        return matchType != null ? matchType : "NONE";
+    }
+
+    public void setMatchType(String matchType) {
+        this.matchType = matchType;
+    }
+
+    public Double getFuzzyScore() {
         return fuzzyScore;
     }
 
-    public void setFuzzyScore(double fuzzyScore) {
+    public void setFuzzyScore(Double fuzzyScore) {
         this.fuzzyScore = fuzzyScore;
     }
 
-    public double getPhoneticScore() {
+    public Double getPhoneticScore() {
         return phoneticScore;
     }
 
-    public void setPhoneticScore(double phoneticScore) {
+    public void setPhoneticScore(Double phoneticScore) {
         this.phoneticScore = phoneticScore;
     }
 
-    public double getEmbeddedScore() {
+    public Double getEmbeddedScore() {
         return embeddedScore;
     }
 
-    public void setEmbeddedScore(double embeddedScore) {
+    public void setEmbeddedScore(Double embeddedScore) {
         this.embeddedScore = embeddedScore;
     }
 
@@ -75,45 +122,6 @@ public class MatchedTitleDto {
     }
 
     public void setMatchTypes(List<String> matchTypes) {
-        this.matchTypes = matchTypes == null ? new ArrayList<>() : new ArrayList<>(new LinkedHashSet<>(matchTypes));
-    }
-
-    public void addMatchType(String matchType) {
-        if (matchType == null || matchType.isBlank()) {
-            return;
-        }
-        LinkedHashSet<String> deduped = new LinkedHashSet<>(matchTypes);
-        deduped.add(matchType);
-        this.matchTypes = new ArrayList<>(deduped);
-    }
-
-    @JsonProperty("similarity")
-    public void setLegacySimilarity(Double similarity) {
-        this.legacySimilarity = similarity;
-        applyLegacyValues();
-    }
-
-    @JsonProperty("matchType")
-    public void setLegacyMatchType(String matchType) {
-        this.legacyMatchType = matchType;
-        applyLegacyValues();
-    }
-
-    @JsonIgnore
-    public double getSimilarity() {
-        return Math.max(fuzzyScore, Math.max(phoneticScore, embeddedScore));
-    }
-
-    private void applyLegacyValues() {
-        if (legacySimilarity == null || legacyMatchType == null) {
-            return;
-        }
-
-        switch (legacyMatchType) {
-            case "PHONETIC" -> setPhoneticScore(legacySimilarity);
-            case "SEMANTIC", "EMBEDDED" -> setEmbeddedScore(legacySimilarity);
-            default -> setFuzzyScore(legacySimilarity);
-        }
-        addMatchType(legacyMatchType);
+        this.matchTypes = matchTypes;
     }
 }
