@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
 
 # Virtual environments
 .venv/
@@ -12,6 +13,9 @@ AI/member_1/vector_search/index/
 
 # Generated evaluation output
 AI/member_1/data/ranked_candidates.json
+
+# Environment variables
+.env
 
 # IDE
 .vscode/
