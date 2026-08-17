@@ -34,7 +34,7 @@ def main():
 
     candidate_pool = retriever.retrieve(
         new_title_data["title"],
-        top_k=10
+        top_k=50
     )
 
     # Remove ANN-only score before embedding scoring.
@@ -56,7 +56,7 @@ def main():
     result = embedding_service.rank_candidates(
         new_title_data,
         candidates,
-        top_k=5
+        top_k=20
     )
 
     # 3. Display Llama-ready output
