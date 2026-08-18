@@ -19,6 +19,7 @@ AI/member_1/data/ranked_candidates.json
 AI/.env
 
 # IDE
+
 .vscode/
 frontend/node_modules/
 frontend/dist/
