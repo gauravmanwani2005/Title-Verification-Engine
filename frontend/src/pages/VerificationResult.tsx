@@ -14,8 +14,9 @@ import type { VerificationResult as VResult, RuleCheck } from '@/types';
 function ScoreGauge({ probability }: { probability: number }) {
   const r    = 52;
   const circ = 2 * Math.PI * r;
-  const dash = (probability / 100) * circ;
-  const color = probability >= 70 ? '#237A4B' : probability >= 40 ? '#9A6700' : '#B42318';
+  const clamped = Math.min(100, Math.max(0, Math.round(probability)));
+  const dash = (clamped / 100) * circ;
+  const color = clamped >= 70 ? '#237A4B' : clamped >= 40 ? '#9A6700' : '#B42318';
 
   return (
     <div className="relative w-36 h-36">
@@ -30,7 +31,7 @@ function ScoreGauge({ probability }: { probability: number }) {
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-3xl font-bold text-[#1F2933]">{probability}%</span>
+        <span className="text-3xl font-bold text-[#1F2933]">{Math.round(probability)}%</span>
         <span className="text-[10px] text-[#667085] font-medium">Verification</span>
         <span className="text-[10px] text-[#667085] font-medium">Probability</span>
       </div>
@@ -40,17 +41,18 @@ function ScoreGauge({ probability }: { probability: number }) {
 
 // ── Risk score row ────────────────────────────────────────────────────────────
 function RiskRow({ label, value }: { label: string; value: number }) {
+  const rounded = Math.round(value * 10) / 10; // 1 decimal place max
   return (
     <div className="flex items-center gap-3">
       <span className="text-xs text-[#667085] w-36 flex-shrink-0">{label}</span>
       <div className="flex-1 h-1.5 bg-[#D9DEE3] rounded-full overflow-hidden">
         <div
-          className={cn('h-full rounded-full transition-all duration-700', getSimilarityBarColor(value))}
-          style={{ width: `${value}%` }}
+          className={cn('h-full rounded-full transition-all duration-700', getSimilarityBarColor(rounded))}
+          style={{ width: `${Math.min(100, rounded)}%` }}
         />
       </div>
-      <span className={cn('text-xs font-semibold tabular-nums w-8 text-right', getSimilarityTextColor(value))}>
-        {value}%
+      <span className={cn('text-xs font-semibold tabular-nums w-12 text-right', getSimilarityTextColor(rounded))}>
+        {rounded}%
       </span>
     </div>
   );
@@ -213,7 +215,7 @@ export function VerificationResult() {
           <div className="flex flex-col items-center gap-1 flex-shrink-0">
             <ScoreGauge probability={verificationProbability} />
             <p className="text-xs text-[#667085] text-center">
-              {100 - verificationProbability}% rejection risk
+              {Math.round(100 - verificationProbability)}% rejection risk
             </p>
           </div>
         </div>
@@ -287,7 +289,7 @@ export function VerificationResult() {
                           'text-lg font-bold tabular-nums',
                           getSimilarityTextColor(match.similarityScore),
                         )}>
-                          {match.similarityScore}%
+                          {Math.round(match.similarityScore * 10) / 10}%
                         </span>
                         <p className="text-[10px] text-[#9AA3AE]">similarity</p>
                       </div>
@@ -314,7 +316,10 @@ export function VerificationResult() {
             <p className="text-xs text-[#667085] leading-relaxed">{explanation}</p>
             {reasons.length > 0 && (
               <ul className="mt-3 space-y-1.5">
-                {reasons.map((r, i) => (
+                {/* Deduplicate and skip any reason that is already the explanation text */}
+                {[...new Set(reasons)]
+                  .filter(r => r.trim() !== explanation.trim())
+                  .map((r, i) => (
                   <li key={i} className="flex items-start gap-1.5 text-xs text-[#667085]">
                     <ChevronRight className="w-3 h-3 mt-0.5 text-[#B0BAC4] flex-shrink-0" />
                     {r}
@@ -332,14 +337,38 @@ export function VerificationResult() {
                 <strong>Title appears sufficiently unique.</strong> Proceed with formal submission to PRGI for registration.
               </p>
             )}
-            {status === 'REJECTED' && (
-              <p className="text-xs text-[#B42318] leading-relaxed">
-                <strong>Title is too similar to an existing registered title.</strong> Consider modifying the proposed title before formal submission.
-              </p>
-            )}
+            {status === 'REJECTED' && (() => {
+              // Determine the primary rejection reason for a specific message
+              const hasRuleViolation = result.ruleChecks && result.ruleChecks.some(c => c.status === 'FAILED');
+              const primaryReason   = reasons[0] ?? '';
+              const isPrefix        = primaryReason.toLowerCase().includes('prefix');
+              const isSuffix        = primaryReason.toLowerCase().includes('suffix');
+              const isDisallowed    = primaryReason.toLowerCase().includes('disallowed') || primaryReason.toLowerCase().includes('restricted');
+              const isPeriodicity   = primaryReason.toLowerCase().includes('periodicity');
+              const isCombination   = primaryReason.toLowerCase().includes('combination') || primaryReason.toLowerCase().includes('combines');
+
+              let message = 'Title is too similar to an existing registered title. Consider modifying the proposed title before formal submission.';
+              if (hasRuleViolation || isDisallowed) {
+                message = 'Title contains a restricted or disallowed word. Remove the restricted term and propose a new title.';
+              } else if (isPrefix) {
+                message = 'Title starts with a disallowed prefix under PRGI guidelines. Remove the prefix and resubmit.';
+              } else if (isSuffix) {
+                message = 'Title ends with a disallowed suffix under PRGI guidelines. Remove the suffix and resubmit.';
+              } else if (isPeriodicity) {
+                message = 'Adding a periodicity term (Daily/Weekly etc.) to an existing title is not permitted. Propose a genuinely original title.';
+              } else if (isCombination) {
+                message = 'Title appears to be a combination of two or more existing registered titles. Propose a genuinely original title.';
+              }
+
+              return (
+                <p className="text-xs text-[#B42318] leading-relaxed">
+                  <strong>Verification not recommended.</strong> {message}
+                </p>
+              );
+            })()}
             {status === 'REVIEW' && (
               <p className="text-xs text-[#9A6700] leading-relaxed">
-                <strong>Case referred to PRGI Officer for manual review.</strong> You will be notified of the decision.
+                <strong>Case referred to PRGI Officer for manual review.</strong> You will be notified of the decision within the review period.
               </p>
             )}
             <div className="flex flex-col gap-2 mt-4">

@@ -5,6 +5,12 @@ Loads the multilingual LaBSE model and provides functions
 for generating embeddings for individual or multiple titles.
 """
 
+import os
+
+# Prevent tokenizer parallelism fork-safety crash on macOS ARM (Apple Silicon).
+# Must be set before any tokenizer import occurs.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from sentence_transformers import SentenceTransformer
 
 

@@ -15,10 +15,76 @@ import java.util.stream.Collectors;
 public class RuleEngine {
 
     private static final Set<String> PERIODICITY_WORDS = Set.of(
-            "daily", "weekly", "monthly", "yearly", "fortnightly", 
+            "daily", "weekly", "monthly", "yearly", "fortnightly",
             "quarterly", "biweekly", "bimonthly", "weekend", "annual",
             "journal", "magazine", "news", "samachar", "patrika"
     );
+
+    /**
+     * Cross-language word translation map (Hindi transliterated ↔ English).
+     * Each entry maps a word token to its translation equivalents.
+     * Used in Rule 6 to catch titles that are translations of existing registered titles.
+     *
+     * Key   = normalized token as it appears after transliteration
+     * Value = list of English (or other language) equivalents
+     */
+    private static final Map<String, List<String>> TRANSLATION_MAP;
+    static {
+        Map<String, List<String>> m = new HashMap<>();
+        // Time / day words
+        m.put("kal",        List.of("yesterday", "tomorrow"));
+        m.put("aaj",        List.of("today"));
+        m.put("subah",      List.of("morning"));
+        m.put("sandhya",    List.of("evening"));
+        m.put("raat",       List.of("night"));
+        m.put("din",        List.of("day"));
+        // Voice / news words
+        m.put("awaj",       List.of("voice"));
+        m.put("awaaj",      List.of("voice"));
+        m.put("awaz",       List.of("voice"));
+        m.put("awaaz",      List.of("voice"));
+        m.put("shabd",      List.of("word"));
+        m.put("khabar",     List.of("news"));
+        m.put("samachar",   List.of("news"));
+        m.put("sandesh",    List.of("message"));
+        m.put("varta",      List.of("news", "talk"));
+        m.put("patrika",    List.of("magazine", "journal"));
+        // Country / nation words
+        m.put("bharat",     List.of("india"));
+        m.put("desh",       List.of("country", "nation"));
+        m.put("rashtra",    List.of("nation"));
+        m.put("rashtriya",  List.of("national"));
+        // People / society
+        m.put("jan",        List.of("people", "public"));
+        m.put("lok",        List.of("people", "public", "folk"));
+        m.put("janta",      List.of("public", "people"));
+        m.put("praja",      List.of("people", "public"));
+        // Possessive / relational
+        m.put("ki",         List.of("of", "s", "'s"));   // "kal ki" = "yesterday's"
+        m.put("ka",         List.of("of"));
+        m.put("ke",         List.of("of"));
+        m.put("s",          List.of("ki", "ka", "ke"));   // possessive artifact from "yesterday's" → "yesterday s"
+        // Common newspaper words
+        m.put("dainik",     List.of("daily"));
+        m.put("pratidin",   List.of("daily", "everyday"));
+        m.put("saaptahik",  List.of("weekly"));
+        m.put("masik",      List.of("monthly"));
+        m.put("times",      List.of("samay", "kal"));
+        m.put("mirror",     List.of("darpan", "aaina"));
+        m.put("herald",     List.of("udghoshak"));
+        m.put("chronicle",  List.of("itihas", "vritant"));
+        m.put("morning",    List.of("subah", "pratah"));
+        m.put("evening",    List.of("sandhya", "sham"));
+        m.put("yesterday",  List.of("kal"));
+        m.put("tomorrow",   List.of("kal"));
+        m.put("today",      List.of("aaj"));
+        m.put("voice",      List.of("awaj", "awaaj", "awaz", "awaaz"));
+        m.put("india",      List.of("bharat", "hindustan"));
+        m.put("national",   List.of("rashtriya"));
+        m.put("people",     List.of("jan", "lok", "janta"));
+        m.put("news",       List.of("khabar", "samachar", "varta"));
+        TRANSLATION_MAP = Collections.unmodifiableMap(m);
+    }
 
     @Autowired
     private BlocklistWordRepository blocklistWordRepository;
@@ -102,7 +168,55 @@ public class RuleEngine {
             }
         }
 
+        // 6. Cross-language translation check
+        // Translate tokens using the bilingual map and check if the translated
+        // form of the input matches any existing registered title.
+        List<String> translatedVariants = buildTranslatedVariants(tokens);
+        for (String variant : translatedVariants) {
+            if (!variant.equals(normalized) && titleRepository.existsByNormalizedText(variant)) {
+                violations.add("Cross-language duplicate: '" + normalized
+                        + "' is a translation of existing title '" + variant + "'");
+            }
+        }
+
         return violations;
+    }
+
+    /**
+     * Builds translated variants of the input by replacing each token
+     * with its cross-language equivalents (one variant per translated token).
+     * Returns a list of candidate normalized strings to check against the DB.
+     */
+    private List<String> buildTranslatedVariants(String[] tokens) {
+        List<String> variants = new ArrayList<>();
+
+        // Single-pass: for each token that has a translation, generate a full
+        // variant where that token is replaced by each of its translations.
+        for (int i = 0; i < tokens.length; i++) {
+            List<String> translations = TRANSLATION_MAP.get(tokens[i]);
+            if (translations == null) continue;
+            for (String translation : translations) {
+                String[] copy = Arrays.copyOf(tokens, tokens.length);
+                copy[i] = translation;
+                variants.add(String.join(" ", copy).trim());
+            }
+        }
+
+        // Also try fully translated version (replace ALL translatable tokens at once)
+        String[] fullyTranslated = Arrays.copyOf(tokens, tokens.length);
+        boolean anyReplaced = false;
+        for (int i = 0; i < fullyTranslated.length; i++) {
+            List<String> translations = TRANSLATION_MAP.get(fullyTranslated[i]);
+            if (translations != null && !translations.isEmpty()) {
+                fullyTranslated[i] = translations.get(0); // use primary translation
+                anyReplaced = true;
+            }
+        }
+        if (anyReplaced) {
+            variants.add(String.join(" ", fullyTranslated).trim());
+        }
+
+        return variants;
     }
 
     private String stripPeriodicity(String normalized) {

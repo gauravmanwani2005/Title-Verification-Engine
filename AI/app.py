@@ -1,6 +1,11 @@
 from contextlib import asynccontextmanager
 import os
 
+# ── macOS ARM (Apple Silicon) compatibility ──────────────────────────────────
+# Set TOKENIZERS_PARALLELISM before any model/tokenizer import to prevent
+# a segfault caused by fork-unsafe tokenizer parallelism.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -46,7 +51,12 @@ async def lifespan(app: FastAPI):
     # Load Member 1 vector index
     try:
         vector_retriever = VectorRetriever()
-    except Exception:
+        print("[vector] FAISS index loaded successfully.")
+    except FileNotFoundError as e:
+        print(f"[vector] FAISS index not found — run 'python build_index.py' first. Detail: {e}")
+        vector_retriever = None
+    except Exception as e:
+        print(f"[vector] Failed to load FAISS index: {e}")
         vector_retriever = None
 
     # Load Member 2 Gemini engine (only if API key is set)

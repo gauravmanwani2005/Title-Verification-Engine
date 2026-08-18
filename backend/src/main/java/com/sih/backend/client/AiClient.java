@@ -104,22 +104,26 @@ public class AiClient {
     public java.util.List<String> getVectorCandidates(String query, String language, int limit) {
         log.info("Calling external AI service for Vector ANN search: '{}' ({})", query, language);
 
+        // AI service VectorSearchRequest uses field "title" (not "query")
         Map<String, Object> body = new HashMap<>();
-        body.put("query", query);
+        body.put("title", query);
         body.put("language", language);
         body.put("limit", limit);
 
         try {
+            // AI service returns { "model": ..., "candidates": [ {"registration_id":..., "title":..., ...} ] }
             @SuppressWarnings("unchecked")
-            java.util.List<Map<String, Object>> response = restClient.post()
+            Map<String, Object> response = restClient.post()
                     .uri(aiVectorUrl)
                     .body(body)
                     .retrieve()
-                    .body(java.util.List.class);
+                    .body(Map.class);
 
-            if (response != null) {
+            if (response != null && response.containsKey("candidates")) {
+                @SuppressWarnings("unchecked")
+                java.util.List<Object> candidates = (java.util.List<Object>) response.get("candidates");
                 java.util.List<String> titles = new java.util.ArrayList<>();
-                for (Object obj : response) {
+                for (Object obj : candidates) {
                     if (obj instanceof Map) {
                         Map<?, ?> item = (Map<?, ?>) obj;
                         if (item.containsKey("title")) {

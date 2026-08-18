@@ -14,16 +14,22 @@ The ANN score is used only for candidate retrieval.
 It is NOT the final embedding_similarity score.
 """
 
+import os
 import json
 from pathlib import Path
 
-import faiss
-import numpy as np
+# ── macOS ARM (Apple Silicon) compatibility ──────────────────────────────────
+# Import the embedding model BEFORE faiss to avoid a BLAS/MPS library conflict
+# that causes a segmentation fault when faiss is loaded first.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from member_1.embeddings.model import (
     load_model,
     generate_embedding
 )
+
+import faiss
+import numpy as np
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -74,7 +80,7 @@ class VectorRetriever:
     def retrieve(
         self,
         title,
-        top_k=10
+        top_k=50
     ):
         """
         Retrieve the nearest existing titles.

@@ -15,16 +15,22 @@ Each title record must contain:
     language
 """
 
+import os
 import json
 from pathlib import Path
 
-import faiss
-import numpy as np
+# ── macOS ARM (Apple Silicon) compatibility ──────────────────────────────────
+# Import the embedding model BEFORE faiss to avoid a BLAS/MPS library conflict
+# that causes a segmentation fault when faiss is loaded first.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from member_1.embeddings.model import (
     load_model,
     generate_batch_embeddings
 )
+
+import faiss
+import numpy as np
 
 
 BASE_DIR = Path(__file__).resolve().parent

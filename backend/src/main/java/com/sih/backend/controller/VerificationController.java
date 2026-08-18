@@ -1,5 +1,6 @@
 package com.sih.backend.controller;
 
+import com.sih.backend.dto.OfficerDecisionRequest;
 import com.sih.backend.dto.ResubmitRequest;
 import com.sih.backend.dto.VerificationRequest;
 import com.sih.backend.dto.VerificationResponse;
@@ -73,19 +74,47 @@ public class VerificationController {
         
         VerificationRequest verificationRequest = new VerificationRequest();
         verificationRequest.setTitle(request.getNewTitle());
-        verificationRequest.setLanguage("en");
+        verificationRequest.setLanguage(request.getLanguage() != null && !request.getLanguage().isBlank()
+                ? request.getLanguage() : "en");
         verificationRequest.setApplicantId("LINKED-SUBMISSION-" + submissionId);
 
+        // Carry forward the language from the original submission if available
         try {
             VerificationResponse original = verificationService.getSubmission(submissionId);
-            verificationRequest.setLanguage(original.isAiCallInvoked() ? "hi" : "en"); // dynamic fallback
+            if (original.getMatchedTitles() != null) {
+                // Preserve the original language from the submission record (via reasons field).
+                // The original language is not exposed directly in VerificationResponse, so
+                // we default to "en" unless the request body supplies it explicitly.
+            }
         } catch (Exception e) {
-            // Original not found, fallback to defaults
+            // Original not found — proceed with defaults
         }
 
         VerificationResponse response = verificationService.verify(verificationRequest);
         response.getReasons().add(0, "Linked to original submission ID: " + submissionId + " for audit trail.");
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * POST /api/titles/{submissionId}/decision
+     * Officer final decision on a REVIEW-verdict submission.
+     * decision must be "ACCEPTED" or "REJECTED".
+     * If ACCEPTED, the title is added to the registered title table.
+     */
+    @PostMapping("/{submissionId}/decision")
+    public ResponseEntity<Map<String, Object>> officerDecision(
+            @PathVariable String submissionId,
+            @RequestBody OfficerDecisionRequest request) {
+        try {
+            Map<String, Object> result = verificationService.applyOfficerDecision(submissionId, request);
+            return ResponseEntity.ok(result);
+        } catch (IllegalArgumentException e) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", e.getMessage());
+            return ResponseEntity.badRequest().body(err);
+        } catch (Exception e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     /**
