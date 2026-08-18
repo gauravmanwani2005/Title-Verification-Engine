@@ -23,6 +23,10 @@ from pathlib import Path
 # Import the embedding model BEFORE faiss to avoid a BLAS/MPS library conflict
 # that causes a segmentation fault when faiss is loaded first.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+print("INDEX BUILDER MODULE LOADED, __name__ is " + __name__)
+
+import faiss
+import numpy as np
 
 from member_1.embeddings.model import (
     load_model,
@@ -237,15 +241,21 @@ def load_titles_from_json(path):
 
 
 if __name__ == "__main__":
-
-    test_data_path = (
-        BASE_DIR.parent
-        / "data"
-        / "test_titles.json"
-    )
-
-    titles = load_titles_from_json(
-        test_data_path
-    )
-
-    build_index(titles)
+    try:
+        print("Main block started")
+        test_data_path = (
+            BASE_DIR.parent
+            / "data"
+            / "test_titles.json"
+        )
+        print("Loading titles from", test_data_path)
+        titles = load_titles_from_json(
+            test_data_path
+        )
+        print("Loaded", len(titles), "titles")
+        build_index(titles)
+        print("Index building completed")
+    except Exception as e:
+        import traceback
+        print("EXCEPTION OCCURRED:", e)
+        traceback.print_exc()

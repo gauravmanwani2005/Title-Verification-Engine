@@ -48,7 +48,7 @@ export function Sidebar({ open, onClose }: Props) {
               <div>
                 <p className="text-white text-sm font-semibold leading-tight tracking-wide">PRGI</p>
                 <p className="text-white/50 text-[10px] leading-tight font-normal mt-0.5">
-                  Title Verification System
+                  अक्षरAI
                 </p>
               </div>
             </div>

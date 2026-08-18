@@ -26,6 +26,9 @@ public class AiClient {
     @Value("${ai.gemini.url:http://localhost:8000/api/gemini/analyze}")
     private String aiGeminiUrl;
 
+    @Value("${ai.index.url:http://localhost:8000/api/vector/index}")
+    private String aiIndexUrl;
+
     public AiClient() {
         this.restClient = RestClient.builder().build();
     }
@@ -128,10 +131,19 @@ public class AiClient {
                         Map<?, ?> item = (Map<?, ?>) obj;
                         if (item.containsKey("title")) {
                             titles.add((String) item.get("title"));
+                java.util.List<?> candidates = (java.util.List<?>) response.get("candidates");
+                if (candidates != null) {
+                    java.util.List<String> titles = new java.util.ArrayList<>();
+                    for (Object obj : candidates) {
+                        if (obj instanceof Map) {
+                            Map<?, ?> item = (Map<?, ?>) obj;
+                            if (item.containsKey("title")) {
+                                titles.add((String) item.get("title"));
+                            }
                         }
                     }
+                    return titles;
                 }
-                return titles;
             }
             throw new RuntimeException("Invalid response from AI Vector Service");
         } catch (Exception e) {
@@ -186,5 +198,34 @@ public class AiClient {
             java.util.List<Map<String, Object>> candidates, Throwable t) {
         log.warn("Gemini service fallback triggered: {}", t.getMessage());
         return java.util.Collections.emptyList();
+    }
+
+    /**
+     * Calls the AI service to index a newly approved title in the FAISS index.
+     */
+    public void indexVectorTitle(String registrationId, String title, String language) {
+        log.info("Indexing new approved title in AI Vector service: '{}' (ID: {}, Lang: {})", title, registrationId, language);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("registration_id", registrationId);
+        body.put("title", title);
+        body.put("language", language);
+
+        try {
+            Map<?, ?> response = restClient.post()
+                    .uri(aiIndexUrl)
+                    .body(body)
+                    .retrieve()
+                    .body(Map.class);
+
+            if (response != null && "success".equals(response.get("status"))) {
+                log.info("Successfully indexed title '{}'. Total in vector index: {}", title, response.get("total_indexed"));
+            } else {
+                throw new RuntimeException("AI Index Service returned unsuccessful status: " + (response != null ? response.get("status") : "null"));
+            }
+        } catch (Exception e) {
+            log.error("Failed to index title '{}': {}", title, e.getMessage());
+            throw new RuntimeException("Failed to call AI Index Service: " + e.getMessage(), e);
+        }
     }
 }

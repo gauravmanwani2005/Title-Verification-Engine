@@ -17,7 +17,7 @@ export function TopNavbar({ onMenuClick }: Props) {
 
       {/* Title */}
       <div className="hidden md:block leading-tight">
-        <p className="text-sm font-semibold text-[#1F2933]">PRGI Title Verification System</p>
+        <p className="text-sm font-semibold text-[#1F2933]">अक्षरAI</p>
         <p className="text-xs text-[#667085]">
           AI-assisted publication title verification and similarity analysis
         </p>

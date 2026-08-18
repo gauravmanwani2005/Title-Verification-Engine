@@ -111,6 +111,37 @@ public class VerificationService {
         List<Title> vectorCandidates   = fetchVectorCandidates(normalized, language);
 
         Set<Long> fuzzyIds    = fuzzyCandidates.stream().map(Title::getId).collect(Collectors.toSet());
+        List<Title> vectorCandidates;
+        try {
+            List<String> vectorTitles = aiClient.getVectorCandidates(rawTitle, language, embeddingRetrievalLimit);
+            if (vectorTitles != null && !vectorTitles.isEmpty()) {
+                vectorCandidates = titleRepository.findAll().stream()
+                        .filter(t -> vectorTitles.contains(t.getRawText()) || vectorTitles.contains(t.getNormalizedText()))
+                        .toList();
+            } else {
+                throw new RuntimeException("No vector titles returned or service fallback triggered empty list");
+            }
+        } catch (Exception e) {
+            log.warn("Vector search failed, falling back to local Cosine Similarity candidate retrieval: {}", e.getMessage());
+            org.apache.commons.text.similarity.CosineSimilarity cosine = new org.apache.commons.text.similarity.CosineSimilarity();
+            Map<CharSequence, Integer> queryFreqs = getTermFrequencies(normalized);
+
+            vectorCandidates = titleRepository.findAll().stream()
+                    .map(t -> {
+                        double sim = 0.0;
+                        try {
+                            sim = cosine.cosineSimilarity(queryFreqs, getTermFrequencies(t.getNormalizedText()));
+                        } catch (Exception ignored) {}
+                        return new AbstractMap.SimpleEntry<>(t, sim);
+                    })
+                    .filter(entry -> entry.getValue() >= 0.5)
+                    .sorted((e1, e2) -> Double.compare(e2.getValue(), e1.getValue()))
+                    .limit(embeddingRetrievalLimit)
+                    .map(Map.Entry::getKey)
+                    .toList();
+        }
+
+        Set<Long> fuzzyIds = fuzzyCandidates.stream().map(Title::getId).collect(Collectors.toSet());
         Set<Long> phoneticIds = phoneticCandidates.stream().map(Title::getId).collect(Collectors.toSet());
         Set<Long> vectorIds   = vectorCandidates.stream().map(Title::getId).collect(Collectors.toSet());
 
@@ -155,6 +186,33 @@ public class VerificationService {
                 double labseScore = aiClient.getSemanticSimilarity(
                         normalized,
                         TransliterationHelper.normalize(dto.getTitle()),
+        // 6. AI / Embedding scoring — limited to top-N candidates for cost/latency control
+        //    Rank the COMPLETE candidate pool using the strongest non-AI score first.
+        List<MatchedTitleDto> candidatesForAi = scoredCandidates.stream()
+                .sorted(
+                        Comparator.comparingDouble(
+                                (MatchedTitleDto dto) -> {
+                                    double priority = dto.getMatchTypes().contains("EMBEDDED") ? 1000.0 : 0.0;
+                                    double fuzzy = dto.getFuzzyScore() != null
+                                            ? dto.getFuzzyScore()
+                                            : 0.0;
+
+                                    double phonetic = dto.getPhoneticScore() != null
+                                            ? dto.getPhoneticScore()
+                                            : 0.0;
+
+                                    return priority + Math.max(fuzzy, phonetic);
+                                }
+                        ).reversed()
+                )
+                .limit(aiScoringLimit)
+                .toList();
+
+        for (MatchedTitleDto dto : candidatesForAi) {
+            try {
+                double semanticSimilarity = aiClient.getSemanticSimilarity(
+                        rawTitle,
+                        dto.getTitle(),
                         language,
                         dto.getFuzzyScore(),
                         dto.getPhoneticScore()) * 100.0;
@@ -192,7 +250,7 @@ public class VerificationService {
                     .toList();
 
             List<Map<String, Object>> geminiResults =
-                    aiClient.getGeminiSemanticScores(normalized, language, geminiInput);
+                    aiClient.getGeminiSemanticScores(rawTitle, language, geminiInput);
             aiCallInvoked = true;
 
             // Build lookup by candidateId string
@@ -245,6 +303,18 @@ public class VerificationService {
             }
 
             dto.setFinalScore(Math.min(100.0, Math.max(0.0, finalScore)));
+        } else {
+            verdict = "APPROVED";
+            reasons.add("No significant similarity conflicts found with existing titles.");
+            if (!titleRepository.existsByNormalizedText(normalized)) {
+                Title newTitle = new Title(rawTitle, normalized, phoneticKey, "APPROVED");
+                Title saved = titleRepository.save(newTitle);
+                try {
+                    aiClient.indexVectorTitle(saved.getId().toString(), rawTitle, language);
+                } catch (Exception e) {
+                    log.error("Failed to index approved title '{}' in AI vector service: {}", rawTitle, e.getMessage());
+                }
+            }
         }
 
         // Sort by finalScore DESC

@@ -22,7 +22,7 @@ export interface RiskBreakdown {
 export interface RuleCheck {
   id: string;
   name: string;
-  status: 'PASSED' | 'WARNING' | 'FAILED';
+  status: 'PASSED' | 'WARNING' | 'FAILED' | 'SKIPPED';
   description: string;
   detail?: string;
 }

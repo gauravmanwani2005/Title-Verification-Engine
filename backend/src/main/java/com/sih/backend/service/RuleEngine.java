@@ -136,10 +136,14 @@ public class RuleEngine {
         List<BlocklistAffix> affixes = getDisallowedAffixes();
         for (BlocklistAffix affix : affixes) {
             String affixVal = affix.getAffix().toLowerCase().trim();
-            if ("PREFIX".equalsIgnoreCase(affix.getType()) && normalized.startsWith(affixVal)) {
-                violations.add("Contains disallowed prefix: '" + affix.getAffix() + "'");
-            } else if ("SUFFIX".equalsIgnoreCase(affix.getType()) && normalized.endsWith(affixVal)) {
-                violations.add("Contains disallowed suffix: '" + affix.getAffix() + "'");
+            if ("PREFIX".equalsIgnoreCase(affix.getType())) {
+                if (normalized.equals(affixVal) || normalized.startsWith(affixVal + " ")) {
+                    violations.add("Contains disallowed prefix: '" + affix.getAffix() + "'");
+                }
+            } else if ("SUFFIX".equalsIgnoreCase(affix.getType())) {
+                if (normalized.equals(affixVal) || normalized.endsWith(" " + affixVal)) {
+                    violations.add("Contains disallowed suffix: '" + affix.getAffix() + "'");
+                }
             }
         }
 
@@ -162,9 +166,17 @@ public class RuleEngine {
 
         // 5. Periodicity check
         String stripped = stripPeriodicity(normalized);
-        if (!stripped.equals(normalized) && !stripped.isBlank()) {
-            if (titleRepository.existsByNormalizedText(stripped)) {
-                violations.add("Violates periodicity check: matches existing root title '" + stripped + "' after stripping periodicity terms");
+        if (!stripped.isBlank()) {
+            Optional<com.sih.backend.model.Title> conflictingTitle = titleRepository.findAll().stream()
+                    .filter(t -> !t.getNormalizedText().equalsIgnoreCase(normalized))
+                    .filter(t -> {
+                        String existingStripped = stripPeriodicity(t.getNormalizedText());
+                        return existingStripped.equalsIgnoreCase(stripped);
+                    })
+                    .findFirst();
+
+            if (conflictingTitle.isPresent()) {
+                violations.add("Violates periodicity check: matches existing title '" + conflictingTitle.get().getRawText() + "' under periodicity rules");
             }
         }
 
@@ -220,13 +232,14 @@ public class RuleEngine {
     }
 
     private String stripPeriodicity(String normalized) {
-        String[] tokens = normalized.split(" ");
+        String[] tokens = normalized.split("\\s+");
         List<String> remaining = new ArrayList<>();
         for (String token : tokens) {
-            if (!PERIODICITY_WORDS.contains(token)) {
+            String cleanToken = token.toLowerCase().trim();
+            if (!PERIODICITY_WORDS.contains(cleanToken)) {
                 remaining.add(token);
             }
         }
-        return String.join(" ", remaining);
+        return String.join(" ", remaining).trim();
     }
 }

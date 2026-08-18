@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from member_1.embeddings.embedding_service import EmbeddingService
-from member_1.embeddings.model import MODEL_NAME
+from member_1.embeddings.model import MODEL_NAME, generate_embedding
 from member_1.vector_search.vector_retriever import VectorRetriever
 
 # Load .env file (GEMINI_API_KEY lives here)
@@ -35,6 +35,12 @@ class VectorSearchRequest(BaseModel):
     title: str
     language: str | None = None
     limit: int = Field(default=50, ge=1, le=500)
+
+
+class IndexTitleRequest(BaseModel):
+    registration_id: str
+    title: str
+    language: str
 
 
 class GeminiAnalyzeRequest(BaseModel):
@@ -116,6 +122,69 @@ def vector_search(request: VectorSearchRequest):
         "metric": SIMILARITY_METRIC,
         "candidates": candidates,
     }
+
+
+@app.post("/api/vector/index")
+def index_title(request: IndexTitleRequest):
+    if vector_retriever is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Vector index is not available.",
+        )
+
+    try:
+        import faiss
+        import numpy as np
+        import json
+
+        # 1. Generate and normalize embedding
+        emb = generate_embedding(
+            vector_retriever.model,
+            request.title
+        )
+        emb = np.asarray(
+            emb,
+            dtype="float32"
+        ).reshape(1, -1)
+        faiss.normalize_L2(emb)
+
+        # 2. Add to index
+        vector_retriever.index.add(emb)
+
+        # 3. Add to metadata list
+        new_meta = {
+            "registration_id": request.registration_id,
+            "title": request.title,
+            "language": request.language
+        }
+        vector_retriever.metadata.append(new_meta)
+
+        # 4. Save to files on disk
+        faiss.write_index(
+            vector_retriever.index,
+            str(vector_retriever.index_path)
+        )
+        with open(
+            vector_retriever.metadata_path,
+            "w",
+            encoding="utf-8"
+        ) as file:
+            json.dump(
+                vector_retriever.metadata,
+                file,
+                ensure_ascii=False,
+                indent=2
+            )
+
+        return {
+            "status": "success",
+            "total_indexed": len(vector_retriever.metadata)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to add to index: {str(e)}"
+        )
 
 
 @app.post("/api/gemini/analyze")

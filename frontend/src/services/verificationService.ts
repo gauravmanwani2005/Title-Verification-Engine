@@ -662,6 +662,27 @@ function mapBackendResponse(data: Record<string, unknown>, request: TitleVerific
 
   const matchedTitles = Array.isArray(data['matchedTitles']) ? data['matchedTitles'] : [];
   const reasons = Array.isArray(data['reasons']) ? (data['reasons'] as string[]) : [];
+  const violations = Array.isArray(data['ruleViolations']) ? (data['ruleViolations'] as string[]) : [];
+
+  const hasRuleViolations = violations.length > 0;
+
+  let maxLexical = sim * 0.8;
+  let maxPhonetic = sim * 0.75;
+  let maxSemantic = sim * 0.9;
+
+  if (matchedTitles.length > 0) {
+    const scores = matchedTitles.map((m: Record<string, unknown>) => {
+      const f = typeof m['fuzzyScore'] === 'number' ? m['fuzzyScore'] : 0;
+      const p = typeof m['phoneticScore'] === 'number' ? m['phoneticScore'] : 0;
+      const e = typeof m['embeddedScore'] === 'number' ? m['embeddedScore'] : 0;
+      return { f, p, e };
+    });
+    maxLexical = Math.max(...scores.map(s => s.f));
+    maxPhonetic = Math.max(...scores.map(s => s.p));
+    maxSemantic = Math.max(...scores.map(s => s.e));
+  }
+
+  const overallRisk = hasRuleViolations ? 100 : sim;
 
   return {
     submissionId: typeof data['submissionId'] === 'string' ? data['submissionId'] : 'VRF-LIVE',
@@ -671,20 +692,33 @@ function mapBackendResponse(data: Record<string, unknown>, request: TitleVerific
     status,
     verificationProbability: prob,
     similarityScore: sim,
-    riskBreakdown: { lexical: sim * 0.8, phonetic: sim * 0.75, semantic: sim * 0.9, ruleViolation: 0, overall: sim },
-    ruleChecks: buildRuleChecksFromReasons(reasons, data['ruleViolations'] as string[]),
-    matches: matchedTitles.map((m: Record<string, unknown>, i: number) => ({
-      id: String(i),
-      title: typeof m['title'] === 'string' ? m['title'] : '',
-      registrationNumber: `REG/LIVE/${i}`,
-      language: request.language,
-      periodicity: request.periodicity,
-      publisher: 'On record',
-      state: 'On record',
-      registrationDate: '',
-      similarityScore: typeof m['similarity'] === 'number' ? Math.round(m['similarity']) : 0,
-      matchTypes: [typeof m['matchType'] === 'string' ? m['matchType'] : 'Fuzzy'],
-    })),
+    riskBreakdown: {
+      lexical: Math.round(maxLexical),
+      phonetic: Math.round(maxPhonetic),
+      semantic: Math.round(maxSemantic),
+      ruleViolation: hasRuleViolations ? 100 : 0,
+      overall: overallRisk
+    },
+    ruleChecks: buildRuleChecksFromReasons(reasons, violations),
+    matches: matchedTitles.map((m: Record<string, unknown>, i: number) => {
+      const f = typeof m['fuzzyScore'] === 'number' ? m['fuzzyScore'] : 0;
+      const p = typeof m['phoneticScore'] === 'number' ? m['phoneticScore'] : 0;
+      const e = typeof m['embeddedScore'] === 'number' ? m['embeddedScore'] : 0;
+      const calculatedSimilarity = Math.round(Math.max(f, p, e));
+
+      return {
+        id: String(i),
+        title: typeof m['title'] === 'string' ? m['title'] : '',
+        registrationNumber: `REG/LIVE/${i}`,
+        language: request.language,
+        periodicity: request.periodicity,
+        publisher: 'On record',
+        state: 'On record',
+        registrationDate: '',
+        similarityScore: calculatedSimilarity,
+        matchTypes: Array.isArray(m['matchTypes']) ? m['matchTypes'] : ['Fuzzy'],
+      };
+    }),
     explanation: reasons.join(' '),
     reasons,
     aiCallInvoked: typeof data['aiCallInvoked'] === 'boolean' ? data['aiCallInvoked'] : false,
@@ -698,14 +732,22 @@ function buildRuleChecksFromReasons(reasons: string[], violations: string[]): im
     violations?.some(v => v.toLowerCase().includes(keyword)) ||
     reasons?.some(r => r.toLowerCase().includes(keyword));
 
+  const getViolation = (keyword: string, defaultPassed: string) => {
+    const found = violations?.find(v => v.toLowerCase().includes(keyword)) ||
+                  reasons?.find(r => r.toLowerCase().includes(keyword));
+    return found ? found : defaultPassed;
+  };
+
+  const hasRuleViolations = violations?.length > 0;
+
   return [
-    { id: 'exact', name: 'Exact Match', status: hasViolation('exact') ? 'FAILED' : 'PASSED', description: hasViolation('exact') ? 'Exact match found.' : 'No exact match found.' },
-    { id: 'phonetic', name: 'Phonetic Similarity', status: hasViolation('phonetic') ? 'FAILED' : 'PASSED', description: hasViolation('phonetic') ? 'Phonetic similarity detected.' : 'Low phonetic similarity.' },
-    { id: 'semantic', name: 'Semantic Similarity', status: hasViolation('semantic') || hasViolation('similar') ? 'WARNING' : 'PASSED', description: 'Semantic analysis complete.' },
-    { id: 'disallowed', name: 'Disallowed Words', status: hasViolation('disallowed') || hasViolation('restricted') ? 'FAILED' : 'PASSED', description: hasViolation('disallowed') ? 'Disallowed word found.' : 'No restricted words.' },
-    { id: 'prefix', name: 'Prefix/Suffix Rules', status: hasViolation('prefix') || hasViolation('suffix') ? 'FAILED' : 'PASSED', description: 'Prefix/suffix check complete.' },
-    { id: 'periodicity', name: 'Periodicity Rules', status: hasViolation('periodicity') ? 'FAILED' : 'PASSED', description: hasViolation('periodicity') ? 'Periodicity violation detected.' : 'No periodicity violation.' },
-    { id: 'combination', name: 'Title Combination', status: hasViolation('combination') || hasViolation('combines') ? 'FAILED' : 'PASSED', description: 'Combination check complete.' },
+    { id: 'exact', name: 'Exact Match', status: hasViolation('exact') ? 'FAILED' : 'PASSED', description: getViolation('exact', 'No exact match found.') },
+    { id: 'phonetic', name: 'Phonetic Similarity', status: hasViolation('phonetic') ? 'FAILED' : hasRuleViolations ? 'SKIPPED' : 'PASSED', description: hasRuleViolations ? 'Check skipped due to a prior rule violation.' : getViolation('phonetic', 'Low phonetic similarity.') },
+    { id: 'semantic', name: 'Semantic Similarity', status: (hasViolation('semantic') || hasViolation('similar')) ? 'WARNING' : hasRuleViolations ? 'SKIPPED' : 'PASSED', description: hasRuleViolations ? 'Check skipped due to a prior rule violation.' : getViolation('semantic', getViolation('similar', 'No semantic similarity conflict.')) },
+    { id: 'disallowed', name: 'Disallowed Words', status: (hasViolation('disallowed') || hasViolation('restricted')) ? 'FAILED' : 'PASSED', description: getViolation('disallowed', getViolation('restricted', 'No restricted words.')) },
+    { id: 'prefix', name: 'Prefix/Suffix Rules', status: (hasViolation('prefix') || hasViolation('suffix')) ? 'FAILED' : 'PASSED', description: getViolation('prefix', getViolation('suffix', 'Prefix/suffix check complete.')) },
+    { id: 'periodicity', name: 'Periodicity Rules', status: hasViolation('periodicity') ? 'FAILED' : 'PASSED', description: getViolation('periodicity', 'No periodicity violation.') },
+    { id: 'combination', name: 'Title Combination', status: (hasViolation('combination') || hasViolation('combines')) ? 'FAILED' : 'PASSED', description: getViolation('combination', getViolation('combines', 'Combination check complete.')) },
   ];
 }
 

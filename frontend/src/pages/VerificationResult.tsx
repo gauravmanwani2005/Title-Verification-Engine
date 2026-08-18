@@ -2,7 +2,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import {
   CheckCircle, XCircle, AlertCircle, ChevronRight,
-  RefreshCw, PenSquare, Info, Calendar, MapPin, Newspaper,
+  RefreshCw, PenSquare, Info, Calendar, MapPin, Newspaper, HelpCircle,
 } from 'lucide-react';
 import { cn, formatDate, getSimilarityBarColor, getSimilarityTextColor } from '@/lib/utils';
 import { SimilarityBar } from '@/components/shared/SimilarityBar';
@@ -64,6 +64,7 @@ function RuleCheckRow({ check }: { check: RuleCheck }) {
     PASSED:  { icon: CheckCircle, bg: 'bg-[#EAF5EE] border-[#B7DECA]', text: 'text-[#237A4B]', badge: 'bg-[#B7DECA] text-[#237A4B]',  label: 'Passed'  },
     WARNING: { icon: AlertCircle, bg: 'bg-[#FFF5E5] border-[#F5D99A]', text: 'text-[#9A6700]', badge: 'bg-[#F5D99A] text-[#9A6700]',  label: 'Warning' },
     FAILED:  { icon: XCircle,     bg: 'bg-[#FCEEEE] border-[#F5C2BE]', text: 'text-[#B42318]', badge: 'bg-[#F5C2BE] text-[#B42318]',  label: 'Failed'  },
+    SKIPPED: { icon: HelpCircle,  bg: 'bg-[#F3F4F6] border-[#D1D5DB]', text: 'text-[#4B5563]', badge: 'bg-[#D1D5DB] text-[#4B5563]',  label: 'Not Checked' },
   }[check.status];
   const Icon = cfg.icon;
 

@@ -65,7 +65,7 @@ export function AppHeader() {
               <span className="text-white text-[10px] font-bold tracking-tight leading-none">PRGI</span>
             </div>
             <div className="leading-tight hidden sm:block">
-              <p className="text-sm font-bold text-[#12304A] tracking-tight">Title Verification System</p>
+              <p className="text-sm font-bold text-[#12304A] tracking-tight">अक्षरAI</p>
               <p className="text-[10px] text-[#9AA3AE] font-normal">Press Registrar General of India</p>
             </div>
           </div>
