@@ -21,6 +21,34 @@ public class RuleEngine {
     );
 
     /**
+     * Static built-in blocklist — words that are ALWAYS prohibited regardless of DB configuration.
+     * These cover sensitive/harmful terms that must never appear in publication titles.
+     * The DB blocklist (admin-configurable) is checked separately in Rule 1.
+     */
+    private static final Set<String> STATIC_BLOCKED_WORDS = Set.of(
+        // Terrorism / extremism
+        "terrorism", "terrorist", "terrorists", "terror", "jihad", "jihadist",
+        "extremist", "extremism", "militant", "militancy", "insurgent", "insurgency",
+        "bomb", "bombing", "bomber", "explosion", "explosive", "blasts",
+        "hijack", "hijacking", "massacre", "genocide",
+        // Drugs / narcotics
+        "narcotics", "narcotic", "cocaine", "heroin", "opium", "smuggling", "smuggler",
+        "drug", "drugs", "trafficker", "trafficking",
+        // Obscenity / hate
+        "pornography", "pornographic", "obscene", "obscenity",
+        // Government impersonation
+        "police", "cbi", "cid", "nia", "raw", "ifs", "ips", "ias",
+        "army", "navy", "airforce", "military", "paramilitary",
+        "president", "parliament", "supreme court", "judiciary", "enforcement",
+        "government", "sarkar", "sarkari",
+        // Violence
+        "murder", "rape", "assassination", "kidnapping", "ransom",
+        "mafia", "gangster", "underworld", "crime", "criminal",
+        "violence", "violent", "brutality", "massacre", "genocide",
+        "terrorist", "terrorism", "terror"
+    );
+
+    /**
      * Cross-language word translation map (Hindi transliterated ↔ English).
      * Each entry maps a word token to its translation equivalents.
      * Used in Rule 6 to catch titles that are translations of existing registered titles.
@@ -123,9 +151,19 @@ public class RuleEngine {
             return violations;
         }
 
-        // 1. Disallowed words check
-        Set<String> disallowedWords = getDisallowedWords();
+        // 0. Static built-in blocklist — always prohibited, no DB lookup needed
+        //    Checked first so these are caught even if admin forgets to add them to DB blocklist
         String[] tokens = normalized.split(" ");
+        for (String token : tokens) {
+            if (STATIC_BLOCKED_WORDS.contains(token)) {
+                violations.add("Contains prohibited word: '" + token
+                        + "' — this term is permanently prohibited in publication titles under PRGI guidelines");
+                return violations; // hard stop — no need to check further
+            }
+        }
+
+        // 1. Disallowed words check (admin-configurable DB blocklist)
+        Set<String> disallowedWords = getDisallowedWords();
         for (String token : tokens) {
             if (disallowedWords.contains(token)) {
                 violations.add("Contains disallowed word: '" + token + "'");
@@ -169,8 +207,6 @@ public class RuleEngine {
         }
 
         // 6. Cross-language translation check
-        // Translate tokens using the bilingual map and check if the translated
-        // form of the input matches any existing registered title.
         List<String> translatedVariants = buildTranslatedVariants(tokens);
         for (String variant : translatedVariants) {
             if (!variant.equals(normalized) && titleRepository.existsByNormalizedText(variant)) {
@@ -179,7 +215,69 @@ public class RuleEngine {
             }
         }
 
+        // 7. Transliteration spelling variant check
+        // Normalizes common Hindi transliteration variants (aa→a, z→j, etc.)
+        // so "kal ki awaaz" is caught as a variant of "kal ki awaaj"
+        String canonicalized = canonicalizeTransliteration(normalized);
+        if (!canonicalized.equals(normalized)) {
+            // Check direct canonical match in DB
+            if (titleRepository.existsByNormalizedText(canonicalized)) {
+                violations.add("Spelling variant of existing title: '" + normalized
+                        + "' matches '" + canonicalized + "'");
+            }
+            // Also check translated variants of the canonicalized form
+            String[] canonTokens = canonicalized.split(" ");
+            List<String> canonVariants = buildTranslatedVariants(canonTokens);
+            for (String variant : canonVariants) {
+                if (!variant.equals(normalized) && !variant.equals(canonicalized)
+                        && titleRepository.existsByNormalizedText(variant)) {
+                    violations.add("Cross-language spelling variant: '" + normalized
+                            + "' is a variant/translation of existing title '" + variant + "'");
+                }
+            }
+        }
+
+        // Also check: does the canonicalized form of the input match the
+        // canonicalized form of ANY existing title?
+        // This catches "kal ki awaj" vs DB "kal ki awaaj" (both → "kal ki awaj")
+        String canonInput = canonicalized.equals(normalized) ? canonicalizeTransliteration(normalized) : canonicalized;
+        List<String> allTitles = titleRepository.findAll().stream()
+                .map(t -> t.getNormalizedText())
+                .filter(t -> t != null && !t.isBlank())
+                .toList();
+        for (String existing : allTitles) {
+            String canonExisting = canonicalizeTransliteration(existing);
+            if (canonInput.equals(canonExisting) && !normalized.equals(existing)) {
+                violations.add("Spelling variant of existing title: '" + normalized
+                        + "' is a transliteration variant of '" + existing + "'");
+                break; // one violation is enough
+            }
+        }
+
         return violations;
+    }
+
+    /**
+     * Canonicalizes common Hindi transliteration spelling variants to a single form.
+     * This ensures "awaaz", "awaaj", "awaz", "awaj" all reduce to the same canonical
+     * string so the exact-duplicate and translation checks catch them.
+     *
+     * Rules applied:
+     *   z → j          (awaaz → awaaj, awaz → awaj)
+     *   double vowels collapsed: aa→a, oo→u, ee→i  (awaaj→awaj, preethi→prithi)
+     */
+    private String canonicalizeTransliteration(String normalized) {
+        if (normalized == null) return "";
+        return normalized
+                // z and j are the same sound in Hindi transliteration
+                .replace("z", "j")
+                // Collapse repeated vowels anywhere in the word
+                .replace("aa", "a")
+                .replace("oo", "u")
+                .replace("ee", "i")
+                // Collapse any resulting double spaces
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     /**

@@ -655,13 +655,65 @@ export async function verifyTitle(request: TitleVerificationRequest): Promise<Ve
 }
 
 function mapBackendResponse(data: Record<string, unknown>, request: TitleVerificationRequest): VerificationResult {
-  // Maps Spring Boot VerificationResponse to our frontend type
   const status = data['verdict'] === 'APPROVED' ? 'APPROVED' : data['verdict'] === 'REJECTED' ? 'REJECTED' : 'REVIEW';
-  const prob = typeof data['verificationProbability'] === 'number' ? Math.round(data['verificationProbability']) : 50;
-  const sim = typeof data['similarityScore'] === 'number' ? Math.round(data['similarityScore']) : 50;
+  const prob = typeof data['verificationProbability'] === 'number'
+    ? Math.round(data['verificationProbability'] * 10) / 10 : 50;
+  const sim = typeof data['similarityScore'] === 'number'
+    ? Math.round(data['similarityScore'] * 10) / 10 : 0;
 
-  const matchedTitles = Array.isArray(data['matchedTitles']) ? data['matchedTitles'] : [];
-  const reasons = Array.isArray(data['reasons']) ? (data['reasons'] as string[]) : [];
+  const matchedTitles = Array.isArray(data['matchedTitles']) ? data['matchedTitles'] as Record<string, unknown>[] : [];
+  const reasons       = Array.isArray(data['reasons'])       ? data['reasons']       as string[]                  : [];
+  const ruleViolations = Array.isArray(data['ruleViolations']) ? data['ruleViolations'] as string[]               : [];
+
+  // ── Build explanation from the most informative available field ──────────
+  let explanation = '';
+  if (ruleViolations.length > 0) {
+    // Rule-based rejection — use violations directly
+    explanation = ruleViolations.join(' | ');
+  } else if (matchedTitles.length > 0) {
+    const top = matchedTitles[0];
+    const topTitle  = typeof top['title']      === 'string' ? top['title']      : '';
+    const topScore  = typeof top['finalScore'] === 'number' ? top['finalScore'] : 0;
+    const fuzzy     = typeof top['fuzzyScore']     === 'number' ? (top['fuzzyScore']     as number).toFixed(1) : null;
+    const phonetic  = typeof top['phoneticScore']  === 'number' ? (top['phoneticScore']  as number).toFixed(1) : null;
+    const embedding = typeof top['embeddingScore'] === 'number' ? (top['embeddingScore'] as number).toFixed(1) : null;
+    const semantic  = typeof top['semanticScore']  === 'number' ? (top['semanticScore']  as number).toFixed(1) : null;
+
+    const parts: string[] = [];
+    if (fuzzy)     parts.push(`Lexical: ${fuzzy}%`);
+    if (phonetic)  parts.push(`Phonetic: ${phonetic}%`);
+    if (embedding) parts.push(`Embedding: ${embedding}%`);
+    if (semantic)  parts.push(`Semantic: ${semantic}%`);
+    const scoreDetail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+
+    if (status === 'APPROVED') {
+      explanation = `"${request.title}" passed all checks. No significantly similar titles found in the PRGI database.`;
+    } else if (status === 'REJECTED') {
+      explanation = `"${request.title}" has ${topScore.toFixed(1)}% final similarity with "${topTitle}"${scoreDetail}. This exceeds the 70% rejection threshold.`;
+    } else {
+      explanation = `"${request.title}" has borderline ${topScore.toFixed(1)}% similarity with "${topTitle}"${scoreDetail}. Referred to officer for manual review.`;
+    }
+  } else if (status === 'APPROVED') {
+    explanation = `"${request.title}" passed all checks. No significantly similar titles found in the PRGI database.`;
+  } else {
+    explanation = reasons.length > 0 ? reasons[0] : 'No explanation available.';
+  }
+
+  // ── Build riskBreakdown from actual top candidate scores ─────────────────
+  let topFuzzy = 0, topPhonetic = 0, topSemantic = 0;
+  if (matchedTitles.length > 0) {
+    const top = matchedTitles[0];
+    topFuzzy    = typeof top['fuzzyScore']     === 'number' ? Math.round(top['fuzzyScore']     as number) : 0;
+    topPhonetic = typeof top['phoneticScore']  === 'number' ? Math.round(top['phoneticScore']  as number) : 0;
+    const emb   = typeof top['embeddingScore'] === 'number' ? top['embeddingScore'] as number : 0;
+    const semv  = typeof top['semanticScore']  === 'number' ? top['semanticScore']  as number : 0;
+    topSemantic = Math.round(Math.max(emb, semv));
+  }
+
+  // ── Build reasons list — use violations if present, otherwise similarity reasons ──
+  const displayReasons: string[] = ruleViolations.length > 0
+    ? ruleViolations
+    : reasons.filter(r => !r.toLowerCase().includes('see ruleviolations'));
 
   return {
     submissionId: typeof data['submissionId'] === 'string' ? data['submissionId'] : 'VRF-LIVE',
@@ -671,22 +723,35 @@ function mapBackendResponse(data: Record<string, unknown>, request: TitleVerific
     status,
     verificationProbability: prob,
     similarityScore: sim,
-    riskBreakdown: { lexical: sim * 0.8, phonetic: sim * 0.75, semantic: sim * 0.9, ruleViolation: 0, overall: sim },
-    ruleChecks: buildRuleChecksFromReasons(reasons, data['ruleViolations'] as string[]),
-    matches: matchedTitles.map((m: Record<string, unknown>, i: number) => ({
-      id: String(i),
-      title: typeof m['title'] === 'string' ? m['title'] : '',
-      registrationNumber: `REG/LIVE/${i}`,
-      language: request.language,
-      periodicity: request.periodicity,
-      publisher: 'On record',
-      state: 'On record',
-      registrationDate: '',
-      similarityScore: typeof m['similarity'] === 'number' ? Math.round(m['similarity']) : 0,
-      matchTypes: [typeof m['matchType'] === 'string' ? m['matchType'] : 'Fuzzy'],
-    })),
-    explanation: reasons.join(' '),
-    reasons,
+    riskBreakdown: {
+      lexical:       topFuzzy,
+      phonetic:      topPhonetic,
+      semantic:      topSemantic,
+      ruleViolation: ruleViolations.length > 0 ? 100 : 0,
+      overall:       sim,
+    },
+    ruleChecks: buildRuleChecksFromReasons(displayReasons, ruleViolations),
+    matches: matchedTitles.map((m: Record<string, unknown>, i: number) => {
+      const finalScore = typeof m['finalScore'] === 'number' ? Math.round((m['finalScore'] as number) * 10) / 10 : 0;
+      // matchTypes is an array from backend e.g. ["FUZZY","VECTOR","EMBEDDED"]
+      const matchTypesArr = Array.isArray(m['matchTypes']) ? (m['matchTypes'] as string[]) : [];
+      const matchTypeStr  = typeof m['matchType'] === 'string' ? m['matchType'] as string : '';
+      const displayTypes  = matchTypesArr.length > 0 ? matchTypesArr : (matchTypeStr ? matchTypeStr.split('_AND_') : ['Fuzzy']);
+      return {
+        id: String(i),
+        title:              typeof m['title']    === 'string' ? m['title']    : '',
+        registrationNumber: `REG/LIVE/${i + 1}`,
+        language:           request.language,
+        periodicity:        request.periodicity,
+        publisher:          'On record',
+        state:              'On record',
+        registrationDate:   '',
+        similarityScore:    finalScore,
+        matchTypes:         displayTypes,
+      };
+    }),
+    explanation,
+    reasons: displayReasons,
     aiCallInvoked: typeof data['aiCallInvoked'] === 'boolean' ? data['aiCallInvoked'] : false,
     processingTimeMs: 0,
     timestamp: new Date().toISOString(),
@@ -694,18 +759,55 @@ function mapBackendResponse(data: Record<string, unknown>, request: TitleVerific
 }
 
 function buildRuleChecksFromReasons(reasons: string[], violations: string[]): import('@/types').RuleCheck[] {
-  const hasViolation = (keyword: string) =>
-    violations?.some(v => v.toLowerCase().includes(keyword)) ||
-    reasons?.some(r => r.toLowerCase().includes(keyword));
+  const all = [...(violations ?? []), ...(reasons ?? [])].map(s => s.toLowerCase());
+  const has = (...keywords: string[]) => keywords.some(k => all.some(s => s.includes(k)));
 
   return [
-    { id: 'exact', name: 'Exact Match', status: hasViolation('exact') ? 'FAILED' : 'PASSED', description: hasViolation('exact') ? 'Exact match found.' : 'No exact match found.' },
-    { id: 'phonetic', name: 'Phonetic Similarity', status: hasViolation('phonetic') ? 'FAILED' : 'PASSED', description: hasViolation('phonetic') ? 'Phonetic similarity detected.' : 'Low phonetic similarity.' },
-    { id: 'semantic', name: 'Semantic Similarity', status: hasViolation('semantic') || hasViolation('similar') ? 'WARNING' : 'PASSED', description: 'Semantic analysis complete.' },
-    { id: 'disallowed', name: 'Disallowed Words', status: hasViolation('disallowed') || hasViolation('restricted') ? 'FAILED' : 'PASSED', description: hasViolation('disallowed') ? 'Disallowed word found.' : 'No restricted words.' },
-    { id: 'prefix', name: 'Prefix/Suffix Rules', status: hasViolation('prefix') || hasViolation('suffix') ? 'FAILED' : 'PASSED', description: 'Prefix/suffix check complete.' },
-    { id: 'periodicity', name: 'Periodicity Rules', status: hasViolation('periodicity') ? 'FAILED' : 'PASSED', description: hasViolation('periodicity') ? 'Periodicity violation detected.' : 'No periodicity violation.' },
-    { id: 'combination', name: 'Title Combination', status: hasViolation('combination') || hasViolation('combines') ? 'FAILED' : 'PASSED', description: 'Combination check complete.' },
+    {
+      id: 'exact', name: 'Exact Match',
+      status: has('exact duplicate', 'exact match') ? 'FAILED' : 'PASSED',
+      description: has('exact duplicate', 'exact match') ? 'Exact duplicate found in PRGI database.' : 'No exact match found.',
+    },
+    {
+      id: 'spelling', name: 'Spelling Variant',
+      status: has('spelling variant', 'transliteration variant') ? 'FAILED' : 'PASSED',
+      description: has('spelling variant', 'transliteration variant') ? 'Spelling/transliteration variant of existing title detected.' : 'No spelling variant found.',
+    },
+    {
+      id: 'phonetic', name: 'Phonetic Similarity',
+      status: has('phonetic') ? 'FAILED' : 'PASSED',
+      description: has('phonetic') ? 'Phonetically similar title detected.' : 'Low phonetic similarity with existing titles.',
+    },
+    {
+      id: 'semantic', name: 'Semantic Similarity',
+      status: has('similar to existing', 'borderline similarity', 'semantic') ? (has('similar to existing') ? 'FAILED' : 'WARNING') : 'PASSED',
+      description: has('similar to existing') ? 'High semantic similarity with existing title.' : has('borderline') ? 'Borderline semantic similarity detected.' : 'No significant semantic similarity found.',
+    },
+    {
+      id: 'crosslang', name: 'Cross-Language Match',
+      status: has('cross-language', 'translation of') ? 'FAILED' : 'PASSED',
+      description: has('cross-language', 'translation of') ? 'Title is a translation of an existing registered title.' : 'No cross-language match detected.',
+    },
+    {
+      id: 'disallowed', name: 'Disallowed Words',
+      status: has('disallowed word', 'restricted') ? 'FAILED' : 'PASSED',
+      description: has('disallowed word', 'restricted') ? 'Contains a restricted or disallowed word.' : 'No restricted words found.',
+    },
+    {
+      id: 'prefix', name: 'Prefix/Suffix Rules',
+      status: has('prefix', 'suffix') ? 'FAILED' : 'PASSED',
+      description: has('prefix') ? 'Uses a disallowed prefix.' : has('suffix') ? 'Uses a disallowed suffix.' : 'No prefix/suffix violation.',
+    },
+    {
+      id: 'periodicity', name: 'Periodicity Rules',
+      status: has('periodicity') ? 'FAILED' : 'PASSED',
+      description: has('periodicity') ? 'Periodicity modification of an existing title detected.' : 'No periodicity violation.',
+    },
+    {
+      id: 'combination', name: 'Title Combination',
+      status: has('combination', 'combines') ? 'FAILED' : 'PASSED',
+      description: has('combination', 'combines') ? 'Title is a combination of existing registered titles.' : 'Not a combination title.',
+    },
   ];
 }
 

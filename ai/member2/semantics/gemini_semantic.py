@@ -19,7 +19,7 @@ from google import genai
 from google.genai import types
 
 
-MODEL_NAME = "gemini-2.0-flash-lite"
+MODEL_NAME = "gemini-3.5-flash-lite"
 
 
 class GeminiSemanticEngine:
@@ -107,4 +107,65 @@ Return only JSON.
         return {
             "application_id":    payload.get("application_id"),
             "candidate_results": results,
+        }
+
+    def check_content_safety(self, title: str, language: str) -> Dict:
+        """
+        Step 1 content safety gate.
+
+        Checks whether a proposed publication title is appropriate for
+        a legitimate Indian press publication under PRGI guidelines.
+
+        Returns:
+            {
+                "safe": bool,       # True = title is appropriate, False = reject
+                "reason": str       # explanation if not safe
+            }
+        """
+        prompt = f"""
+You are a content safety reviewer for the Press Registrar General of India (PRGI).
+
+Your job is to decide whether a proposed publication title is appropriate for a legitimate Indian press/newspaper/magazine.
+
+A title is UNSAFE if it:
+- Contains or promotes terrorism, extremism, violence, or incitement to hatred
+- References illegal drugs, narcotics, or substance abuse
+- Contains obscene, pornographic, or sexually explicit content
+- Impersonates government agencies (CBI, NIA, RAW, Police, Army, etc.)
+- Promotes or glorifies crime, murder, rape, or other serious offenses
+- Contains hate speech targeting religion, caste, ethnicity, or gender
+- Is clearly inappropriate or offensive for a public publication
+
+A title is SAFE if it:
+- Is a normal newspaper/magazine name even if it touches sensitive topics journalistically
+  (e.g., "Crime Reporter", "Anti-Drug Chronicle", "Terror Watch" are SAFE — they report on topics)
+- Contains words that sound sensitive but are used in a neutral/journalistic context
+
+Proposed title: "{title}"
+Language: "{language}"
+
+Respond with JSON only. Be strict about genuinely harmful content but do NOT over-reject legitimate journalistic titles.
+"""
+
+        response = self.client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "OBJECT",
+                    "properties": {
+                        "safe":   {"type": "BOOLEAN"},
+                        "reason": {"type": "STRING"},
+                    },
+                    "required": ["safe", "reason"],
+                },
+            ),
+        )
+
+        result = json.loads(response.text)
+        return {
+            "safe":   bool(result["safe"]),
+            "reason": result["reason"],
         }

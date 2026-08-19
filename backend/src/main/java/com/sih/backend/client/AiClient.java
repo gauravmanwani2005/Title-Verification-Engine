@@ -26,6 +26,9 @@ public class AiClient {
     @Value("${ai.gemini.url:http://localhost:8000/api/gemini/analyze}")
     private String aiGeminiUrl;
 
+    @Value("${ai.gemini.safety.url:http://localhost:8000/api/gemini/safety}")
+    private String aiGeminiSafetyUrl;
+
     public AiClient() {
         this.restClient = RestClient.builder().build();
     }
@@ -186,5 +189,47 @@ public class AiClient {
             java.util.List<Map<String, Object>> candidates, Throwable t) {
         log.warn("Gemini service fallback triggered: {}", t.getMessage());
         return java.util.Collections.emptyList();
+    }
+
+    /**
+     * Step 1 content safety gate via Gemini.
+     * Returns a map with "safe" (boolean) and "reason" (string).
+     * Falls back to safe=true if Gemini is unavailable so pipeline continues.
+     */
+    @CircuitBreaker(name = "aiService", fallbackMethod = "fallbackContentSafety")
+    public Map<String, Object> checkContentSafety(String title, String language) {
+        log.info("Calling Gemini content safety check for: '{}'", title);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("title", title);
+        body.put("language", language);
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = restClient.post()
+                    .uri(aiGeminiSafetyUrl)
+                    .body(body)
+                    .retrieve()
+                    .body(Map.class);
+
+            if (response != null && response.containsKey("safe")) {
+                return response;
+            }
+            // Unexpected response — fail open
+            Map<String, Object> fallback = new HashMap<>();
+            fallback.put("safe", true);
+            fallback.put("reason", "Unexpected safety response — proceeding.");
+            return fallback;
+        } catch (Exception e) {
+            throw new RuntimeException("Content safety check failed: " + e.getMessage(), e);
+        }
+    }
+
+    public Map<String, Object> fallbackContentSafety(String title, String language, Throwable t) {
+        log.warn("Content safety check fallback (Gemini unavailable): {}", t.getMessage());
+        Map<String, Object> result = new HashMap<>();
+        result.put("safe", true);
+        result.put("reason", "Content safety check unavailable — proceeding to rule engine.");
+        return result;
     }
 }

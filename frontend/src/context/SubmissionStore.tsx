@@ -36,8 +36,13 @@ export function SubmissionStoreProvider({ children }: { children: ReactNode }) {
       submittedAt: new Date().toISOString(),
       submittedBy: 'Applicant (Demo)',
     };
-    // Prepend so newest appears first
-    setSubmissions(prev => [entry, ...prev]);
+    // Prepend newest first — deduplicate by submissionId to prevent double entries
+    setSubmissions(prev => {
+      if (prev.some(e => e.result.submissionId === result.submissionId)) {
+        return prev; // already exists, skip
+      }
+      return [entry, ...prev];
+    });
   }
 
   return (

@@ -76,7 +76,7 @@ public class VerificationService {
 
     // ── Model version constants (Item 14 — auditability) ─────────────────────
     private static final String MEMBER1_MODEL = "sentence-transformers/LaBSE";
-    private static final String MEMBER2_MODEL = "gemini-2.0-flash-lite";
+    private static final String MEMBER2_MODEL = "gemini-3.5-flash-lite";
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -85,14 +85,35 @@ public class VerificationService {
         String language    = request.getLanguage();
         String applicantId = request.getApplicantId();
 
-        // 1. Normalize
+        String submissionId = UUID.randomUUID().toString();
+        List<String> reasons = new ArrayList<>();
+
+        // 1. Gemini content safety gate — runs BEFORE rule engine
+        //    If Gemini flags the title as harmful, reject immediately with Gemini's reason
+        try {
+            Map<String, Object> safetyResult = aiClient.checkContentSafety(rawTitle, language);
+            boolean safe = safetyResult.get("safe") instanceof Boolean
+                    ? (Boolean) safetyResult.get("safe") : true;
+            if (!safe) {
+                String safetyReason = (String) safetyResult.getOrDefault("reason",
+                        "Title flagged as inappropriate by content safety review.");
+                log.info("Content safety REJECTED '{}': {}", rawTitle, safetyReason);
+                List<String> safetyViolations = List.of("Content safety violation: " + safetyReason);
+                List<String> safetyReasons = List.of("Title rejected by AI content safety review. " + safetyReason);
+                return saveAndReturnResponse(submissionId, rawTitle, language, applicantId,
+                        "REJECTED", 0.0, 0.0, safetyReasons,
+                        Collections.emptyList(), safetyViolations, true);
+            }
+        } catch (Exception e) {
+            log.debug("Content safety check skipped (non-blocking): {}", e.getMessage());
+        }
+
+        // 2. Normalize
         String normalized = TransliterationHelper.normalize(rawTitle);
         log.info("Verifying: '{}' → '{}'", rawTitle, normalized);
 
-        // 2. Hard rules
+        // 3. Hard rules
         List<String> ruleViolations = ruleEngine.check(normalized);
-        String submissionId = UUID.randomUUID().toString();
-        List<String> reasons = new ArrayList<>();
 
         if (!ruleViolations.isEmpty()) {
             // ruleViolations carries the detail — reasons gets a single human-readable summary

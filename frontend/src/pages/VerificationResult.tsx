@@ -338,26 +338,27 @@ export function VerificationResult() {
               </p>
             )}
             {status === 'REJECTED' && (() => {
-              // Determine the primary rejection reason for a specific message
-              const hasRuleViolation = result.ruleChecks && result.ruleChecks.some(c => c.status === 'FAILED');
-              const primaryReason   = reasons[0] ?? '';
-              const isPrefix        = primaryReason.toLowerCase().includes('prefix');
-              const isSuffix        = primaryReason.toLowerCase().includes('suffix');
-              const isDisallowed    = primaryReason.toLowerCase().includes('disallowed') || primaryReason.toLowerCase().includes('restricted');
-              const isPeriodicity   = primaryReason.toLowerCase().includes('periodicity');
-              const isCombination   = primaryReason.toLowerCase().includes('combination') || primaryReason.toLowerCase().includes('combines');
+              const allViolations = [...(result.ruleViolations ?? []), ...(result.reasons ?? [])].map(s => s.toLowerCase());
+              const has = (...kw: string[]) => kw.some(k => allViolations.some(s => s.includes(k)));
 
-              let message = 'Title is too similar to an existing registered title. Consider modifying the proposed title before formal submission.';
-              if (hasRuleViolation || isDisallowed) {
-                message = 'Title contains a restricted or disallowed word. Remove the restricted term and propose a new title.';
-              } else if (isPrefix) {
-                message = 'Title starts with a disallowed prefix under PRGI guidelines. Remove the prefix and resubmit.';
-              } else if (isSuffix) {
-                message = 'Title ends with a disallowed suffix under PRGI guidelines. Remove the suffix and resubmit.';
-              } else if (isPeriodicity) {
+              let message = 'Title is too similar to an existing registered title. Consider choosing a more distinct name before formal submission.';
+
+              if (has('exact duplicate', 'exact match')) {
+                message = 'This title already exists in the PRGI database. Please propose a completely different title.';
+              } else if (has('spelling variant', 'transliteration variant')) {
+                message = 'This title is a spelling or transliteration variant of an existing registered title. Propose a genuinely different title.';
+              } else if (has('cross-language', 'translation of')) {
+                message = 'This title is a translation of an existing registered title. Cross-language duplicates are not permitted under PRGI guidelines.';
+              } else if (has('periodicity')) {
                 message = 'Adding a periodicity term (Daily/Weekly etc.) to an existing title is not permitted. Propose a genuinely original title.';
-              } else if (isCombination) {
-                message = 'Title appears to be a combination of two or more existing registered titles. Propose a genuinely original title.';
+              } else if (has('combination', 'combines')) {
+                message = 'Title is a combination of two or more existing registered titles. Propose a genuinely original title.';
+              } else if (has('prefix')) {
+                message = 'Title starts with a disallowed prefix under PRGI guidelines. Remove the prefix and resubmit.';
+              } else if (has('suffix')) {
+                message = 'Title ends with a disallowed suffix under PRGI guidelines. Remove the suffix and resubmit.';
+              } else if (has('disallowed word', 'restricted')) {
+                message = 'Title contains a restricted or disallowed word. Remove the restricted term and propose a new title.';
               }
 
               return (

@@ -140,3 +140,28 @@ def gemini_analyze(request: GeminiAnalyzeRequest):
 
     result = gemini_engine.analyze_candidates(payload)
     return result
+
+
+class GeminiSafetyRequest(BaseModel):
+    title: str
+    language: str | None = "en"
+
+
+@app.post("/api/gemini/safety")
+def gemini_safety(request: GeminiSafetyRequest):
+    """
+    Step 1 content safety gate.
+    Checks if the proposed title is appropriate for a legitimate press publication.
+    Returns { "safe": bool, "reason": str }
+    If Gemini is unavailable, defaults to safe=True so the pipeline continues.
+    """
+    if gemini_engine is None:
+        # Gemini not available — fail open (let blocklist handle it downstream)
+        return {"safe": True, "reason": "Content safety check unavailable — proceeding to rule engine."}
+
+    try:
+        result = gemini_engine.check_content_safety(request.title, request.language or "en")
+        return result
+    except Exception as e:
+        # Fail open — don't block submissions if Gemini is temporarily down
+        return {"safe": True, "reason": f"Content safety check failed: {str(e)}"}
